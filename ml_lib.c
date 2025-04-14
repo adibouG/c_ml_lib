@@ -58,16 +58,25 @@ int main()
     NN nn = nn_alloc(arch, ARRAY_LEN(arch));
     NN g = nn_alloc(arch, ARRAY_LEN(arch));
     nn_rand(nn, 0, 1);
+    
+    size_t ITER = 5000;
+
     float delta = 1e-1;
-    float learn_rate = 1e-1;
+    float learn_rate = 1; //1e-1;
     
-    size_t ITER = 2000;
-    
+    printf("cost=%f\n", nn_cost(nn, ti, to)); 
+
     for (size_t i=0;i<ITER;++i){
+#if 0
         nn_finite_diff(nn, g, delta, ti, to);
+#else
+        nn_backprop(nn, g, ti, to);
+#endif 
+     //   NN_PRINT(g);
         nn_learn(nn, g, learn_rate);
         printf("%zu: cost=%f\n", i, nn_cost(nn, ti, to)); 
     }
+     //   NN_PRINT(nn);
     
     printf("Post training Model Test\n");         
     for (size_t i=0; i < 2; ++i){
@@ -78,6 +87,6 @@ int main()
             printf("%zu ^ %zu = %f\n", i, j, MAT_AT(NN_OUT(nn), 0, 0)); 
         } 
     }
+    
     return 0;
-   
 }
