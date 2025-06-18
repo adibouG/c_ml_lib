@@ -1,14 +1,16 @@
-#ifndef ML_H_
-#define ML_H_
+#ifndef MLLIB_H
+#define MLLIB_H
 
-
-
+#include <stdint.h>
 #include <stddef.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+//#define STB_IMAGE_IMPLEMENTATION
+//#include "./stb_image.h"
 
 #ifndef ML_MALLOC
 #define ML_MALLOC malloc
@@ -73,7 +75,8 @@ void mat_activate_fn(Mat m, Activation f);
 
 int mat_save(const char * filename, Mat m);
 Mat mat_load(const char * filepath) ;
-
+void print_img(const char * filename);
+Mat img_to_mat(const char * filename);
 
 
 #define MAT_PRINT(m) mat_print(m, #m, 0);
@@ -325,21 +328,16 @@ void mat_print(Mat m, const char * layer, size_t padding)
 int mat_save(const char * filename, Mat m)
 {
     const char * magic = "mat.data";
-
     FILE * data_out = fopen(filename,"wb");
-
     if (data_out == NULL) {
-        fprintf(stderr, "Could not open file %s",filename);
+        fprintf(stderr, "Could not open file %s\n", filename);
         return 1;
     }
-
-
-    fwrite(magic,   strlen(magic),    1, data_out);
+    fwrite(magic, strlen(magic),    1, data_out);
     fwrite(&m.rows, sizeof(m.rows),  1, data_out);
     fwrite(&m.cols, sizeof(m.cols),  1, data_out);
 
     for (size_t i = 0; i <m.rows; ++i){
-
         size_t n = fwrite(&MAT_AT(m, i, 0), sizeof(*m.es), m.cols, data_out);
         while (n < m.cols && !ferror(data_out)){
             size_t k = fwrite(m.es + n, sizeof(*m.es), m.cols - n, data_out);
@@ -347,34 +345,63 @@ int mat_save(const char * filename, Mat m)
         }
     }
     if (ferror(data_out)) {
-        fprintf(stderr, "error fwrite\n");
+        fprintf(stderr, "write error on file %s\n", filename);
+        fclose(data_out);
         return 1;
     }
 
     fclose(data_out);
+    fflush(stdout);
 
-    printf("data generated\n");
+    printf("mat_save()........Results view:.....\n");
+    printf("rows: %zu, cols: %zu\n", m.rows, m.cols);
+    printf("size: %zu bytes\n", sizeof(*m.es)*m.rows*m.cols + sizeof(magic) + sizeof(m.rows) + sizeof(m.cols));
+    printf("magic: %s\n", magic);
+    printf("data saved to %s\n", filename);
+    printf("mat_save()..................:.....\n");
+
     return 0;
 }
-
 
 Mat mat_load(const char * filepath)
 {
     u_int64_t magic;
-    FILE * data_in = fopen(filepath,"r");
+    FILE * data_in = fopen(filepath,"rb");
     Mat m;
     if (data_in == NULL) {
-        fprintf(stderr, "Could not open file %s",filepath);
+        fprintf(stderr, "Could not open file %s\n",filepath);
         m = mat_alloc(0, 0);
+        fclose(data_in);
         return m;
     }
 
     fread(&magic, sizeof(magic),1, data_in);
-    if (magic == 0x6d61742e64617461) {
-        fprintf (stderr, "magic mismatch");
-
+  
+    uint64_t magic_le = ((magic << 56) | 
+            (((magic >> 48) << 56) >> 48) |
+            (((magic >> 40) << 56) >> 40) |
+            (((magic >> 32) << 56) >> 32) |
+            (((magic >> 24) << 56) >> 24) |
+            (((magic >> 16) << 56) >> 16) |
+            (((magic << 16) >> 56) << 16) |
+            (((magic << 24) >> 56) << 24) |
+            (((magic << 32) >> 56) << 32) |
+            (((magic << 40) >> 56) << 40) |
+            (((magic << 48) >> 56) << 48) |
+        (magic >> 56));
+    printf("magic: 0x%llx, magic_le: 0x%llx\n", magic, magic_le);    
+    if (magic != 0x6d61742e64617461 &&
+         magic_le != 0x6d61742e64617461) 
+    {          
+        fprintf (stderr, "magic mismatch 0x%llx != 0x6d61742e64617461\n", magic);
+        fprintf (stderr, "magic_le (reversed, little endianess) mismatch too 0x%llx != 0x6d61742e64617461\n", magic_le);
+        fprintf(stderr, "file %s is not a valid .mat file\n", filepath);        
+        fclose(data_in);
+        m = mat_alloc(0, 0);
+        return m;
     }
-     size_t rows, cols;
+    
+    size_t rows, cols;
     fread(&rows, sizeof (rows), 1 , data_in);
     fread(&cols, sizeof (cols), 1 , data_in);
     m = mat_alloc(rows, cols);
@@ -384,13 +411,52 @@ Mat mat_load(const char * filepath)
         size_t k = fread(m.es, sizeof (*m.es ) + n, rows * cols -n, data_in);
         n += k;
     }
+    if (ferror(data_in)) {
+        fprintf(stderr, "read error on file %s\n", filepath);
+        m = mat_alloc(0, 0);
+        return m;
+    }
     fclose(data_in);
-
-    printf("data loaded");
+    fflush(stdout);
+    printf("Matrix data loaded from %s\n", filepath);
     return m;
 }
 
+/*
+Mat img_to_mat(const char * filename)
+{
+    int img_w, img_h, img_c;
+    uint8_t * pixel_data = (uint8_t *) stbi_load(filename, &img_w, &img_h, &img_c, 0);
+    printf("%s size %d x %d , %d bits\n", filename, img_w, img_h, img_c*8 );
 
+    Mat m = mat_alloc(img_w*img_h, 3) ;
+
+    for (int x=0; x < img_w; ++x){
+        for (int y=0; y < img_h; ++y){
+            size_t i = (y * img_w + x ) ;
+            MAT_AT(m, i , 0) = (float) x/(img_w -1) ;
+            MAT_AT(m, i , 1) = (float) y/(img_h -1) ;
+            MAT_AT(m, i , 2) = pixel_data[i]/255.f ;
+        }
+    }
+    return m;
+}
+
+void print_img(const char * filename)
+{
+    int img_w, img_h, img_c;
+    uint8_t * pixel_data = (uint8_t *) stbi_load(filename, &img_w, &img_h, &img_c, 0);
+    printf("%s size %d x %d , %d bits\n", filename, img_w, img_h, img_c*8 );
+
+    for (int x=0; x < img_w; ++x){
+        for (int y=0; y < img_h; ++y){
+            size_t i = (y * img_w + x ) ;
+            printf("%3u ", pixel_data[i]);
+        }
+        printf("\n");
+    }
+}
+*/
 ///////////////////////////////////////////////////////
 
 

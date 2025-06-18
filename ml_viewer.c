@@ -3,6 +3,9 @@
 
 #include "raylib.h"
 
+//#define STB_IMAGE_IMPLEMENTATION
+//#include "./stb_image.h"
+
 #define ML_IMP
 #include "mllib.h"
 
@@ -14,12 +17,6 @@
 #endif
 
 
-
-#define IMG_BG_COLOR BLACK
-#define IMG_FG_COLOR GRAY
-
-#define COLOR_LOW_ACTIVITY  GRAY
-#define COLOR_HIGH_ACTIVITY GREEN
 
 typedef int Errno ;
 
@@ -36,7 +33,7 @@ typedef struct {
 } Coords;
 
 
-
+//Dynamic array implrementation using a macro
 
 #define DA_INIT_CAP 256
 
@@ -52,34 +49,47 @@ if ((da)->count >= (da)->capacity) {                                            
 while (0)                                                                           \
 
 
-void nn_render(NN nn, int nn_pos_x, int nn_pos_y, int nn_w, int nn_h) {
+#define IMG_FACTOR 80
+#define IMG_WIDTH (16 * (IMG_FACTOR))
+#define IMG_HEIGHT (9 * (IMG_FACTOR))
+
+#define IMG_PADDING 5
+
+#define FPS 60
+
+const Color IMG_BG_COLOR = BLACK;
+const Color IMG_FG_COLOR = GRAY;
+const Color COLOR_LOW_ACTIVITY = RED;
+const Color COLOR_HIGH_ACTIVITY = GREEN;
+
+void nn_render(NN nn, int pos_x, int pos_y, int w, int h) {
 
     size_t arch_count = nn.count + 1;
-    float  nn_layer_pad_h = nn_w / arch_count;
+    float  nn_layer_pad_h = w / arch_count;
 
-    float NEURON_RADIUS = 10 + (nn_h/50) ;
-    float CONX_WIDTH = 2 + ((nn_h)/100)/250;
+    float NEURON_RADIUS = 10 + (h/50) ;
+    float CONX_WIDTH = 2 + ((h)/100)/250;
 
     Color activate = COLOR_HIGH_ACTIVITY;
     Color deactivate = COLOR_LOW_ACTIVITY;
     for (size_t l=0; l < arch_count; ++l) {
 
-        int layer_pad_v1 = nn_h / nn.as[l].cols;
+        int layer_pad_v1 = h / nn.as[l].cols;
 
         for (size_t i=0; i < nn.as[l].cols; ++i) {
 
-            int cx1 = nn_pos_x + nn_layer_pad_h * l + nn_layer_pad_h  / 2;
-            int cy1 = nn_pos_y + layer_pad_v1 * i + layer_pad_v1 / 2;
+            int cx1 = pos_x + nn_layer_pad_h * l + nn_layer_pad_h  / 2;
+            int cy1 = pos_y + layer_pad_v1 * i + layer_pad_v1 / 2;
 
             // neuron inter layers connection network
             if (l + 1 < arch_count)
             {
-                int layer_pad_v2 = nn_h / nn.as[l+1].cols;
+                int layer_pad_v2 = h / nn.as[l+1].cols;
 
                 for (size_t j=0; j < nn.as[l+1].cols; ++j) {
 
-                    int cx2 = nn_pos_x + nn_layer_pad_h * (l+1) + nn_layer_pad_h/2;
-                    int cy2 = nn_pos_y + layer_pad_v2 * j + layer_pad_v2/2;
+                    int cx2 = pos_x + nn_layer_pad_h * (l+1) + nn_layer_pad_h/2;
+                    int cy2 = pos_y + layer_pad_v2 * j + layer_pad_v2/2;
 
                     float weigth_value = sigmf(MAT_AT(nn.ws[l], j, i));
                     float alpha = floorf(255.f*weigth_value);
@@ -117,7 +127,7 @@ void chart_min_max (Chart chart, float *min, float *max)
     *max =FLT_MIN ;
     for (size_t i=0; i < chart.count; ++i) {
         if (*max < chart.items[i]) *max = chart.items[i];
-        if (*min > chart.items[i])  *min = chart.items[i];
+        if (*min > chart.items[i]) *min = chart.items[i];
     }
 }
 
@@ -125,49 +135,247 @@ void chart_min_max (Chart chart, float *min, float *max)
 void cost_graph_render (Chart chart, int xpos, int ypos, int img_w, int img_h)
 {
     float min, max;
-
+    float PADDING_INNER_LEFT = img_w * 0.05f;
+    float PADDING_INNER_RIGHT = PADDING_INNER_LEFT;
+    Color color_chart = RED;
+    Color color_ref_y0 = WHITE;
     size_t n = chart.count;
-    chart_min_max (chart, &min, &max);
-
-    if (n < 100) n = 100;
+    if (chart.items == NULL || chart.count == 0) {
+        DrawText("No data to display", xpos + 5, ypos + 5, img_h*0.04, color_ref_y0);
+        return;
+    }
+    if (chart.count < 2) {
+        DrawText("Not enough data to display", xpos + 5, ypos + 5, img_h*0.04, color_ref_y0);
+        return;
+    }
+   // chart_min_max (&chart, *min, *max); inlined to simplify and  avoid dereferencing
+    min = FLT_MAX ;
+    max = FLT_MIN ;
+    for (size_t i=0; i < chart.count; ++i) {
+        if (max < chart.items[i]) max = chart.items[i];
+        if (min > chart.items[i]) min = chart.items[i];
+    }
+   //__chart_min_max: end 
     if (min > 0) min = 0;
-    if (min > max) min = max;
+    //if (min > max) min = max;
+    if (n < 1000) n = 1000;   
+    
+    char buffer_cost_text_value[64];
 
-    for (size_t i=1; i < chart.count; ++i) {
+    for (size_t i=0; i+1 < chart.count; ++i) {
 
-        float x = xpos + (float) img_w / chart.count*(i-1);
-        float y = ypos + (1 - (chart.items[i-1] - min) / (max - min)) * img_h;
-        float x2 = xpos + (float) img_w / chart.count*(i);
-        float y2 = ypos + (1 - (chart.items[i] - min) / (max - min)) * img_h;
+        float x1 = xpos + (float) img_w / n*(i);
+        float y1 = ypos + (1 - (chart.items[i] - min) / (max - min)) * img_h;
+        
+        float x2 = xpos + (float) img_w / n*(i+1);
+        float y2 = ypos + (1 - (chart.items[i+1] - min) / (max - min)) * img_h;
+        // chart line-points for plotting cost trace
+        DrawLineEx((Vector2){x1, y1}, (Vector2){x2, y2}, img_h*0.004, color_chart);
 
-        DrawLineEx((Vector2){x, y}, (Vector2){x2, y2}, img_h*0.004, RED);
-        //DrawCircle(x, y, img_h*0.004, RED);
+
+        // TODO: dynamic chart value y axis ref line and text 
+        /*
+        DrawLineEx((Vector2){xpos + 0, y1}, (Vector2){x1, y1}, img_h*0.004, color_ref_y0);
+        
+        if (cost_value_display == FOLLOW_ON_AXIS || cost_value_display == FOLLOW_ON_CHART) {
+            snprintf(buffer_cost_text_value, sizeof(buffer_cost_text_value), "%f", chart.items[i]);
+            if (chart.count > 0) {
+                snprintf(buffer_cost_text_value, sizeof(buffer_cost_text_value), "%f", chart.items[chart.count - 1]);
+                DrawText(buffer, xpos + 0, ypos + 0, img_h*0.04, color_ref_y0);
+            //  DrawText("Cost: %f", x1, ref_y0 - img_h*0.04, img_h*0.04, color_ref_y0); 
+            }
+        }
+        */
+    }
+
+    // draw chart reference lines
+    // horizontal X axis reference line at y = 0 <=> Cost = 0
+    float ref_y0 = ypos + (1 - (0 - min) / (max - min)) * img_h;
+    DrawLineEx((Vector2){xpos + 0, ref_y0}, (Vector2){xpos + img_w - 1, ref_y0}, img_h*0.004, color_ref_y0);
+    DrawText("Cost: 0", img_w*0.04 - xpos, ref_y0 - 2*img_h*0.04, img_h*0.04, color_ref_y0);     	
+
+    // TODO : vertical Y axis reference for cost dynamic value display
+    /*
+    float ref_x0 = ypos + (1 - (0 - min) / (max - min)) * img_h;
+    DrawLineEx((Vector2){xpos + 0, ref_y0}, (Vector2){xpos + img_w - 1, ref_y0}, img_h*0.004, color_ref_y0);
+    DrawText("Cost:0", img_w + xpos, ref_y0 - img_h*0.04, img_h*0.04, color_ref_y0); 
+    */
+
+    if (chart.count > 0) {
+        char buffer[64];
+        snprintf(buffer, sizeof(buffer), "%f", chart.items[chart.count - 1]);
+        DrawText(buffer, xpos + 0, ypos + 0, img_h*0.04, color_ref_y0);
     }
 }
 
-#define IMG_FACTOR 80
-#define IMG_WIDTH (16 * (IMG_FACTOR))
-#define IMG_HEIGHT (9 * (IMG_FACTOR))
 
-#define IMG_PADDING 10
+void displayOriginalImage(int img_w, int img_h, Mat to, bool hide_null)
+{
+    printf("original image pixels data:\n");
+    
+    for (size_t y=0; y < (size_t) img_h; ++y){
+        for (size_t x=0; x < (size_t)img_w ; ++x){
+            size_t idx = y*img_w + x;
+            uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
+            if (hide_null && pixel == 0) printf("    ");
+            else printf("%3u ", pixel);
+        }
+        printf("\n");
+    }      
+    printf("\n\n\n");
+}
 
-#define FPS 60
+void displayTrainingResult(NN nn, int img_w, int img_h, bool hide_null)
+{
+    printf("displaying training result:\n");
 
-#define LOAD_FILE
+    for (size_t y=0; y < (size_t)img_h; ++y){
+        for (size_t x=0; x < (size_t)img_w ; ++x){
+            MAT_AT(NN_IN(nn), 0, 0) = (float) x / (28 - 1);
+            MAT_AT(NN_IN(nn), 0, 1) = (float) y / (28 - 1);
+            nn_forward(nn);
+            uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+            if (hide_null && pixel == 0) printf("    ");
+            else printf("%3u ", pixel);
+        }
+        printf("\n");
+    }
+}
+
+
+/*
+ * TODO: 
+ *  - add dynamic chart value display
+ *  - handle in-training setting manual update issues:
+ *      -- max iteration overflow .
+ *  - add weight/bias/... value display on neuron hovering
+ *  - add display of activity values on element hovering
+ *  - add/try different options for dynamic cost value display on charts
+ *  - add dynamic learn rate 
+ *
+ */
+NN displayTrainingUI(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t ITER,  char * title )
+{
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    InitWindow(IMG_WIDTH, IMG_HEIGHT, title);
+    SetTargetFPS(FPS);
+
+    Chart cost_trace = {0};
+    int num_of_widgets = 3; // 2 widget as default: neuron network and cost trace
+    size_t iter = 0;
+    bool stop_training = true;
+    while (!WindowShouldClose())
+    {
+        if (IsKeyPressed(KEY_SPACE)) {
+            stop_training = !stop_training;
+        }
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            CloseWindow();
+            return nn;
+        }
+        if (IsKeyPressed(KEY_R)) {
+            stop_training = true;
+            // reset training
+            nn_rand(nn, -1, 1);
+            nn_zero(g);
+            //da_append(&cost_trace, 0.f);
+            iter = 0;
+            cost_trace.count = 0;
+        }
+        if (IsKeyPressed(KEY_UP)) {
+            learn_rate += 0.1f;
+            if (learn_rate > 10.f) learn_rate = 10.f;
+        }
+        if (IsKeyPressed(KEY_DOWN)) {
+            learn_rate -= 0.1f;
+            if (learn_rate < 0.01f) learn_rate = 0.01f;
+        }
+        if (IsKeyPressed(KEY_LEFT)) {
+            ITER -= 1000;
+            if (ITER < 1000) ITER = 1000;
+        }
+        if (IsKeyPressed(KEY_RIGHT)) {
+            ITER += 1000;
+        }
+        float cost = nn_cost(nn, ti, to);
+        if (iter >= ITER) {
+            stop_training = true;
+        }
+            // nn_finite_diff(nn, g, diff_delta, ti, to);
+        
+        if (!stop_training) {
+        
+            if (iter < ITER) {
+                nn_backprop(nn, g, ti, to);
+                nn_learn(nn, g, learn_rate);
+                iter += 1;
+                da_append(&cost_trace, cost); 
+            }
+        }
+        BeginDrawing();
+        ClearBackground(IMG_BG_COLOR);
+        int w = GetRenderWidth();
+        int h = GetRenderHeight();
+        int vpad = IMG_PADDING * w/100;
+        int hpad = IMG_PADDING * h/100;
+        
+        int graph_w  =  (w-2*vpad)/num_of_widgets;
+
+        int graph_h =   (h-2*hpad)*3/4;
+        int graph_pos_y = h/2 - graph_h/2;
+        int graph_pos_x ; // xpos;
+        {
+            graph_pos_x = w - vpad - graph_w; // xpos;
+            nn_render(nn, graph_pos_x, graph_pos_y, graph_w, graph_h);
+            graph_pos_y = h/2 - graph_h/2;
+            graph_pos_x = vpad; // xpos;
+            cost_graph_render(cost_trace, graph_pos_x, graph_pos_y, graph_w, graph_h);
+            
+            char buffer[256];
+            snprintf(buffer, sizeof(buffer),
+                   "Iterations: %zu/%zu - LearnRate: %f - Cost: %f",
+                   iter, ITER, learn_rate, cost);
+            DrawText(buffer, 0, 0, h*0.04, WHITE);
+        }
+        EndDrawing();
+        
+    }
+    CloseWindow();
+    return nn;
+}
+
 
 int main(int argc, char * argv[])
 {
     srand(time(0));
 
      if (argc < 3) {
-        fprintf(stderr, "missing argument arch_file and/or data_file");
+        fprintf(stderr, "missing arguments 1 and/or 2:\n");
+        fprintf(stderr, "usage: %s <archfile.arch> <datafile.mat>\n", argv[0]);
+        return 1;
     }
+
     char * arch_file_name = argv[1];
     char * data_file_name = argv[2];
+    
+    char * out_rescaled_file_name = "upscaled.out.png";
+    if (argc == 4) {
+        out_rescaled_file_name = argv[3];
+    }
+    
+    int out_rescaled_img_size_w = 512;
+    int out_rescaled_img_size_h = 512;
+    if (argc == 5 || argc == 6) {
+        out_rescaled_img_size_w = atoi(argv[4]);
+        if (argc == 6) {
+            out_rescaled_img_size_h = atoi(argv[5]);
+        }
+        else {
+            out_rescaled_img_size_h = out_rescaled_img_size_w;
+        }
+    }
+    
 
-    // TODO :load a nn def from file
-    //char * arch_file_name = "adder.arch";
-    //char * data_file_name = "adder.mat";
     int buf_length = 0;
     unsigned char * buf = LoadFileData(arch_file_name, &buf_length);
 
@@ -183,17 +391,18 @@ int main(int argc, char * argv[])
         printf("%zu\n", arch_data);
     }
 
-    Mat  t = mat_load(data_file_name)  ;
+    Mat t = mat_load(data_file_name)  ;
     ML_ASSERT(arch.count > 1);
-    MAT_PRINT(t);
+  
     size_t arch_in_sz = arch.items[0]    ;
     size_t arch_out_sz = arch.items[arch.count - 1]    ;
     ML_ASSERT(t.cols == arch_in_sz + arch_out_sz);
+   
     NN nn = nn_alloc(arch.items, arch.count);
 
      Mat ti = {
         .es = &MAT_AT(t, 0, 0),
-        .cols =arch_in_sz,
+        .cols = arch_in_sz,
         .rows = t.rows,
         .stride = t.stride
     }; //  mat_alloc(td_rows, 2*BITS);
@@ -204,64 +413,68 @@ int main(int argc, char * argv[])
         .rows = t.rows,
         .stride = t.stride
     }; //mat_alloc(td_rows, BITS+1);
+   
 
     NN g = nn_alloc(arch.items, arch.count);
     nn_rand(nn, -1, 1);
-    NN_PRINT(nn);
-              //  return  0 ;
-    char * title = "ML adder" ;
+    
+    char * title = "ML image" ;
     char * meth_name = "back_prop";
 
     float diff_delta = 1.f; //1e-1;
-    float learn_rate = 1e-1; //1.f
+    // TO DO: make the learning rate dynamic
+    float learn_rate = 1.f; //0.1f; 
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(IMG_WIDTH, IMG_HEIGHT, title);
-    SetTargetFPS(FPS);
+    size_t ITER = 1000 * 00;
+    
+    nn = displayTrainingUI(nn, g, ti, to, learn_rate, ITER, title);
+   
+    size_t img_h = sqrt(t.rows) ;
+    size_t img_w = img_h;
+    //TODO: HANDLE ASPECT RATIO for non-square images
+    // TO DO: handle non-square images WITH ASPECT RATIO FOR UPSCALING
 
-    Chart cost_trace = {0};
-
-    size_t ITER = 10000;
-    size_t iter = 0;
-    while (!WindowShouldClose())
-    {
-        float cost =  nn_cost(nn, ti, to);
-        if (iter < ITER) {
-            nn_backprop(nn, g, ti, to);
-            nn_learn(nn, g, learn_rate);
-            iter += 1;
-            cost = nn_cost(nn, ti, to);
-            da_append(&cost_trace,cost); // nn_cost(nn, ti, to));
-
-        }
-        BeginDrawing();
-        ClearBackground(IMG_BG_COLOR);
-        int w = GetRenderWidth();
-        int h = GetRenderHeight();
-
-        int graph_w  =  w/2 - IMG_PADDING*2/w ;
-        int graph_h =   h*3/4 - IMG_PADDING*2/h  ;
-        int graph_pos_y = h/2 - graph_h/2;
-        int graph_pos_x ; // xpos;
-        {
-            graph_pos_x = w - graph_w; // xpos;
-           // nn_render(nn, nn_coord);
-            nn_render(nn, graph_pos_x, graph_pos_y, graph_w, graph_h);
-
-            graph_pos_y = h/2 - graph_h/2;
-            graph_pos_x = 0;
-            //cost_graph_render(cost_graph, cost_coord);
-            cost_graph_render(cost_trace, graph_pos_x, graph_pos_y, graph_w, graph_h);
-
-            char buffer[256];
-            snprintf(buffer, sizeof(buffer), "Iteration: %zu/%zu - learn_rate: %f - Cost: %f", iter, ITER, learn_rate, cost); //nn_cost(nn, ti, to));
-            DrawText(buffer, 0, 0, h*0.04, WHITE);
-        }
-        EndDrawing();
+    if (img_w * img_h != t.rows) {
+        fprintf(stderr, "image size is not square: %zu x %zu\n", img_w, img_h);
+        return 1;
     }
 
-    CloseWindow();
+    displayOriginalImage(img_w, img_h, to, false);
+    displayTrainingResult(nn, img_w, img_h, false);
+    
+    size_t img_out_w = (size_t) out_rescaled_img_size_w;
+    size_t img_out_h = (size_t) out_rescaled_img_size_h;
+ 
+    //uint8_t * img_out_pixels = (uint8_t *) malloc(img_out_h * img_out_w * sizeof(uint8_t));
+    uint8_t * img_out_pixels = malloc(img_out_h * img_out_w * sizeof(*img_out_pixels));
+    assert(img_out_pixels != NULL);
 
+    for (size_t y=0; y <  img_out_h; ++y){
+        for (size_t x=0; x <  img_out_w; ++x){
+            MAT_AT(NN_IN(nn), 0, 0) = (float) x / (img_out_w - 1);
+            MAT_AT(NN_IN(nn), 0, 1) = (float) y / (img_out_h - 1);
+            nn_forward(nn);
+            uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+            img_out_pixels[y * img_out_w + x] = pixel;
+        }
+    }
+ 
+    stbi_write_png(out_rescaled_file_name, img_out_w, img_out_h, 1, img_out_pixels, 0);
+    printf("upscaled image %zu x %zu saved as %s\n", img_out_w, img_out_h, out_rescaled_file_name);
+
+    // save upscaled image
+    if (!stbi_write_png(out_rescaled_file_name, img_out_w, img_out_h, 1, img_out_pixels, 0)) 
+    {
+        fprintf(stderr, "Error: failed to save upscaled image: %s\n", out_rescaled_file_name);
+        return 1;
+    }
+   
+    printf("upscaled image %zu x %zu saved as %s\n", img_out_w, img_out_h, out_rescaled_file_name); 
+    return 0;
+    
+    
+
+    /*
     size_t BITS = NN_OUT(nn).cols - 1;
     size_t n = (1<<BITS);
     size_t fail = 0;
@@ -299,7 +512,7 @@ int main(int argc, char * argv[])
         }
     }
     if (fail == 0) printf("OK\n");
-
+                                   */
     return 0;
 }
 
