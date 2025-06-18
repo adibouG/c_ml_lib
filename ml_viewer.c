@@ -1,10 +1,6 @@
 #include <stdio.h>
 #include <float.h>
-
 #include "raylib.h"
-
-//#define STB_IMAGE_IMPLEMENTATION
-//#include "./stb_image.h"
 
 #define ML_IMP
 #include "mllib.h"
@@ -16,9 +12,7 @@
 #define ML_GRAPH_ASSERT ML_ASSERT
 #endif
 
-
-
-typedef int Errno ;
+typedef int Errno;
 
 typedef struct {
     size_t count;
@@ -26,17 +20,13 @@ typedef struct {
     float * items;
 } Chart;
 
-
 typedef struct {
     Vector2 point;
     Vector2 size; // x = w  y = h
 } Coords;
 
-
 //Dynamic array implrementation using a macro
-
 #define DA_INIT_CAP 256
-
 #define da_append(da, item) do {                                                    \
 if ((da)->count >= (da)->capacity) {                                                \
     (da)->capacity = (da)->capacity == 0 ? DA_INIT_CAP : (da)->capacity*2;          \
@@ -54,24 +44,37 @@ while (0)                                                                       
 #define IMG_HEIGHT (9 * (IMG_FACTOR))
 
 #define IMG_PADDING 5
-
 #define FPS 60
 
+const size_t TRAINING_DEFAULT_ITER = 50 * 1000; // 50k iterations by default
+const size_t TRAINING_MIN_ITER = 5 * 1000; // 5k iterations minimum
+const size_t TRAINING_MAX_ITER = 1000 * 1000; // 1M iterations maximum
+const float_t TRAINING_DEFAULT_DIFF_DELTA = 1e-1f;
+const float_t TRAINING_DEFAULT_LEARN_RATE = 1.f;
+const size_t UI_WIDGET_LAYOUT = 2;
+const size_t UI_FPS = 60;
+const size_t UI_IMG_PADDING = 5;
 const Color IMG_BG_COLOR = BLACK;
 const Color IMG_FG_COLOR = GRAY;
-const Color COLOR_LOW_ACTIVITY = RED;
+const Color COLOR_LOW_ACTIVITY = BLUE;
 const Color COLOR_HIGH_ACTIVITY = GREEN;
 
-void nn_render(NN nn, int pos_x, int pos_y, int w, int h) {
-
+void nn_render(NN nn, int pos_x, int pos_y, int w, int h) 
+{
     size_t arch_count = nn.count + 1;
     float  nn_layer_pad_h = w / arch_count;
+
+    size_t resiz_factor = h > w ? h : w;
 
     float NEURON_RADIUS = 10 + (h/50) ;
     float CONX_WIDTH = 2 + ((h)/100)/250;
 
     Color activate = COLOR_HIGH_ACTIVITY;
     Color deactivate = COLOR_LOW_ACTIVITY;
+    // TODO: 
+    //  - extract element values for hovering displays
+    
+                    
     for (size_t l=0; l < arch_count; ++l) {
 
         int layer_pad_v1 = h / nn.as[l].cols;
@@ -90,15 +93,15 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h) {
 
                     int cx2 = pos_x + nn_layer_pad_h * (l+1) + nn_layer_pad_h/2;
                     int cy2 = pos_y + layer_pad_v2 * j + layer_pad_v2/2;
-
-                    float weigth_value = sigmf(MAT_AT(nn.ws[l], j, i));
-                    float alpha = floorf(255.f*weigth_value);
+                    // draw connection line between neurons
+                    float weight_value = sigmf(MAT_AT(nn.ws[l], j, i));
+                    float alpha = floorf(255.f * weight_value);
                     activate.a = alpha;
                     float thick = CONX_WIDTH + floorf(alpha/153);
-                    Color colr = ColorAlphaBlend(deactivate, activate, WHITE);
+                    Color dynamic_color = ColorAlphaBlend(deactivate, activate, WHITE);
                     Vector2 st = { cx1, cy1 };
                     Vector2 en = { cx2, cy2 };
-                    DrawLineEx (st, en, thick, colr);
+                    DrawLineEx (st, en, thick, dynamic_color);
                 } // __ for __
             } // __ if __
 
@@ -106,7 +109,7 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h) {
             {
 
                 float bias_value = sigmf(MAT_AT(nn.bs[l-1], 0, i));
-                float alpha = floorf(255.f*bias_value);
+                float alpha = floorf(255.f * bias_value);
                 activate.a = alpha;
                 // size_t layer_neuron_nbr = nn.as[l-1].cols
                 // float layer_size_neuron_radius = (float) (nn_h/layer_neuron_nbr);
@@ -123,8 +126,8 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h) {
 
 void chart_min_max (Chart chart, float *min, float *max)
 {
-    *min =FLT_MAX ;
-    *max =FLT_MIN ;
+    *min = FLT_MAX ;
+    *max = FLT_MIN ;
     for (size_t i=0; i < chart.count; ++i) {
         if (*max < chart.items[i]) *max = chart.items[i];
         if (*min > chart.items[i]) *min = chart.items[i];
@@ -211,23 +214,24 @@ void cost_graph_render (Chart chart, int xpos, int ypos, int img_w, int img_h)
 
 void displayOriginalImage(int img_w, int img_h, Mat to, bool hide_null)
 {
-    printf("original image pixels data:\n");
+    printf("*** 'ASCII styled': Original image pixel data: ***\n");
     
-    for (size_t y=0; y < (size_t) img_h; ++y){
-        for (size_t x=0; x < (size_t)img_w ; ++x){
-            size_t idx = y*img_w + x;
+    for (size_t y = 0; y < (size_t) img_h; ++y){
+        for (size_t x = 0; x < (size_t) img_w; ++x){
+            size_t idx = y * img_w + x;
             uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
-            if (hide_null && pixel == 0) printf("    ");
-            else printf("%3u ", pixel);
+            
+            (hide_null && pixel == 0) ?
+                printf("    ") :
+                printf("%3u ", pixel);
         }
         printf("\n");
     }      
-    printf("\n\n\n");
 }
 
 void displayTrainingResult(NN nn, int img_w, int img_h, bool hide_null)
 {
-    printf("displaying training result:\n");
+    printf("*** 'ASCII styled': NN Post-Training Result image pixel data: ***\n");
 
     for (size_t y=0; y < (size_t)img_h; ++y){
         for (size_t x=0; x < (size_t)img_w ; ++x){
@@ -235,8 +239,10 @@ void displayTrainingResult(NN nn, int img_w, int img_h, bool hide_null)
             MAT_AT(NN_IN(nn), 0, 1) = (float) y / (28 - 1);
             nn_forward(nn);
             uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
-            if (hide_null && pixel == 0) printf("    ");
-            else printf("%3u ", pixel);
+
+            (hide_null && pixel == 0) ?
+                printf("    ") :
+                printf("%3u ", pixel);
         }
         printf("\n");
     }
@@ -261,19 +267,22 @@ NN displayTrainingUI(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t ITER,
     SetTargetFPS(FPS);
 
     Chart cost_trace = {0};
-    int num_of_widgets = 3; // 2 widget as default: neuron network and cost trace
+    int num_of_widgets = UI_WIDGET_LAYOUT; // 2 widget as default: neuron network and cost trace
     size_t iter = 0;
     bool stop_training = true;
     while (!WindowShouldClose())
     {
+        // SPACE: start/pause training
         if (IsKeyPressed(KEY_SPACE)) {
             stop_training = !stop_training;
         }
-        if (IsKeyPressed(KEY_ESCAPE)) {
+        // ESC: stop & exit training UI
+        else if (IsKeyPressed(KEY_ESCAPE)) {
             CloseWindow();
             return nn;
         }
-        if (IsKeyPressed(KEY_R)) {
+        // R: reset/restart current training session
+        else if (IsKeyPressed(KEY_R)) {
             stop_training = true;
             // reset training
             nn_rand(nn, -1, 1);
@@ -282,33 +291,36 @@ NN displayTrainingUI(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t ITER,
             iter = 0;
             cost_trace.count = 0;
         }
-        if (IsKeyPressed(KEY_UP)) {
+        // UP/DOWN: increase/decrease learn rate
+        else if (IsKeyPressed(KEY_UP)) {
             learn_rate += 0.1f;
             if (learn_rate > 10.f) learn_rate = 10.f;
         }
-        if (IsKeyPressed(KEY_DOWN)) {
+        else if (IsKeyPressed(KEY_DOWN)) {
             learn_rate -= 0.1f;
-            if (learn_rate < 0.01f) learn_rate = 0.01f;
+            if (learn_rate < 0.0001f) learn_rate = 0.0001f;
         }
-        if (IsKeyPressed(KEY_LEFT)) {
-            ITER -= 1000;
-            if (ITER < 1000) ITER = 1000;
+        // LEFT/RIGHT: decrease/increase max iterations
+        else if (IsKeyPressed(KEY_LEFT) && ITER > TRAINING_MIN_ITER) {
+            ITER -= TRAINING_MIN_ITER;
+            if (ITER < TRAINING_MIN_ITER) ITER = TRAINING_MIN_ITER;
         }
-        if (IsKeyPressed(KEY_RIGHT)) {
-            ITER += 1000;
+        else if (IsKeyPressed(KEY_RIGHT) && ITER < TRAINING_MAX_ITER) {
+            ITER += TRAINING_MIN_ITER;
+            if (ITER > TRAINING_MAX_ITER) ITER = TRAINING_MAX_ITER;
         }
         float cost = nn_cost(nn, ti, to);
-        if (iter >= ITER) {
+        // nn_finite_diff(nn, g, diff_delta, ti, to);
+        if (iter > ITER) {
             stop_training = true;
         }
-            // nn_finite_diff(nn, g, diff_delta, ti, to);
         
         if (!stop_training) {
         
-            if (iter < ITER) {
+            if (iter >= 0 && iter < ITER) {
+                iter += 1;
                 nn_backprop(nn, g, ti, to);
                 nn_learn(nn, g, learn_rate);
-                iter += 1;
                 da_append(&cost_trace, cost); 
             }
         }
@@ -425,7 +437,7 @@ int main(int argc, char * argv[])
     // TO DO: make the learning rate dynamic
     float learn_rate = 1.f; //0.1f; 
 
-    size_t ITER = 1000 * 00;
+    size_t ITER = TRAINING_DEFAULT_ITER;
     
     nn = displayTrainingUI(nn, g, ti, to, learn_rate, ITER, title);
    
