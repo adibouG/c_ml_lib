@@ -22,10 +22,12 @@
 #endif
 
 typedef enum {
-    Sig = 0,
+    None = 0,
+    Sig,
     Rel,
     Sin,
-} Activation;
+    count
+} ActivationFn;
 
 
 typedef struct {
@@ -59,6 +61,8 @@ Mat mat_alloc(size_t rows, size_t cols);
 Mat mat_getrow(Mat m, size_t row);
 Mat mat_getsubmat(Mat m, size_t from_row, size_t to_row, size_t from_col, size_t to_col);
 
+void mat_shuffle_rows(Mat m);
+void mat_split_data(Mat m, int size, Mat * batch_list);
 Mat mat_sub(Mat m, size_t start);
 void mat_copy(Mat dst, Mat src);
 void mat_dot(Mat dest, Mat a, Mat b);
@@ -71,7 +75,7 @@ void mat_sin(Mat m);
 void mat_sig(Mat m);
 void mat_relu(Mat m);
 
-void mat_activate_fn(Mat m, Activation f);
+//  void mat_activate_fn(Mat m, Activation f);
 
 int mat_save(const char * filename, Mat m);
 Mat mat_load(const char * filepath) ;
@@ -87,7 +91,7 @@ Mat img_to_mat(const char * filename);
 
 typedef struct {
     Mat * mat;
-    Activation a;
+    ActivationFn a;
 } NNLayer;
 
 
@@ -96,6 +100,8 @@ typedef struct {
     Mat *ws;
     Mat *bs;
     Mat *as; // amount activations count +1
+    char * method;  // "sgd", "adam", etc.
+    char * activation;  // "sigm", "relu", etc.
 } NN;
 
 
@@ -159,7 +165,7 @@ void mat_sin(Mat a)
     }
 }
 
-void mat_activate_fn(Mat a, Activation f)
+void mat_activate_fn(Mat a, ActivationFn f)
 {
     for (size_t r=0; r< a.rows; ++r){
         for (size_t c=0; c< a.cols; ++c){
@@ -243,6 +249,58 @@ Mat mat_subview(Mat m, size_t start, size_t end)
         .stride = m.stride,
         .es     = &MAT_AT(m, 0, start)
     };
+}
+
+
+
+void mat_shuffle_rows(Mat m)
+{
+    for (size_t r=0; r < m.rows; ++r){
+        size_t r2 = r + rand() % (m.rows - r)  ; //r2 = r + rand() % m.rows; //  rand() % m.rows
+        if (r == r2) {
+            continue; // no need to swap with itself
+        }
+        // swap rows r and r2, column by column
+        for (size_t c=0; c < m.cols; ++c){
+            float tmp = MAT_AT(m, r, c);
+            MAT_AT(m, r, c) = MAT_AT(m, r2, c);
+            MAT_AT(m, r2, c) = tmp;
+        }
+    }
+}
+/*  6/4 = 1  r2
+    [1 2 3 
+    4 5 6
+
+    7 8 9
+    10 11 12
+     
+    13 14 15
+    16 17 18]
+
+*/
+void mat_split_data(Mat m, int size, Mat * batch_list)
+{
+    ML_ASSERT(m.rows > 0 && m.cols > 0);
+    ML_ASSERT(size > 0 && size <= m.rows);
+
+    if (size == 1 || size == m.rows) {
+        batch_list[0] = m; // no split, no sgd, just return the original matrix
+        return;
+    }
+   
+    if (m.rows % size == 0) { // rows must be divisible by size
+        int count = m.rows / size;
+        for (int i=0; i < count; ++i){
+            size_t start_row = i % m.rows; // size; // i * (m.rows / size);
+            size_t end_row = start_row + size - 1;
+            batch_list[i] = mat_subview(m, start_row, end_row);
+        }
+    }
+    else {
+        fprintf(stderr, "mat_split_data: rows %zu not divisible by size %d\n", m.rows, size);
+        ML_ASSERT(0); // rows must be divisible by size
+    }   
 }
 
 

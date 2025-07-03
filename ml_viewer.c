@@ -17,6 +17,16 @@ typedef int Errno;
 typedef struct {
     size_t count;
     size_t capacity;
+    size_t type_size; // size of the type of the items in the array
+    // items is a pointer to the array of items
+    void * items;
+} DArray;
+
+
+
+typedef struct {
+    size_t count;
+    size_t capacity;
     float * items;
 } Chart;
 
@@ -39,24 +49,25 @@ if ((da)->count >= (da)->capacity) {                                            
 while (0)                                                                           \
 
 
-#define IMG_FACTOR 80
-#define IMG_WIDTH (16 * (IMG_FACTOR))
-#define IMG_HEIGHT (9 * (IMG_FACTOR))
+const size_t UI_FPS = 60;
+const size_t UI_WINDOW_FACTOR = 80;
+const size_t UI_WINDOW_WIDTH = (16 * (UI_WINDOW_FACTOR));
+const size_t UI_WINDOW_HEIGHT = (9 * (UI_WINDOW_FACTOR));
 
-#define IMG_PADDING 5
-#define FPS 60
-
+const size_t UI_WINDOW_PADDING = 5;
 const size_t TRAINING_DEFAULT_ITER = 50 * 1000; // 50k iterations by default
 const size_t TRAINING_MIN_ITER = 5 * 1000; // 5k iterations minimum
 const size_t TRAINING_MAX_ITER = 1000 * 1000; // 1M iterations maximum
 const float_t TRAINING_DEFAULT_DIFF_DELTA = 1e-1f;
 const float_t TRAINING_DEFAULT_LEARN_RATE = 1.f;
-const size_t UI_WIDGET_LAYOUT = 2;
-const size_t UI_FPS = 60;
-const size_t UI_IMG_PADDING = 5;
-const Color IMG_BG_COLOR = BLACK;
-const Color IMG_FG_COLOR = GRAY;
-const Color COLOR_LOW_ACTIVITY = BLUE;
+const size_t UI_WIDGET_LAYOUT_BASE = {1, 3}; // 1 row and 3 cols : plot, metwork, data
+const size_t UI_WIDGET_LAYOUT_LIVE_IMG = {1, 2}; // 2 img side by side: // original and live preview
+const size_t UI_WIDGET_LAYOUT_LIVE_IMG_MERGE = {2, 3}; //row1 => in1: img1, coef rate modif, in2: img2 // row2 => out1: merged_img;
+const size_t UI_WIDGET_PADDING = 5;
+const Color UI_BG_COLOR = GRAY; 
+const Color UI_FG_COLOR = WHITE;
+const Color UI_HOVER_COLOR = LIGHTGRAY;
+const Color COLOR_LOW_ACTIVITY = SKYBLUE;
 const Color COLOR_HIGH_ACTIVITY = GREEN;
 
 void nn_render(NN nn, int pos_x, int pos_y, int w, int h) 
@@ -73,8 +84,7 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h)
     Color deactivate = COLOR_LOW_ACTIVITY;
     // TODO: 
     //  - extract element values for hovering displays
-    
-                    
+    //  - add dynamic color for neuron activity 
     for (size_t l=0; l < arch_count; ++l) {
 
         int layer_pad_v1 = h / nn.as[l].cols;
@@ -118,7 +128,7 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h)
             }
             else  // input layer neurons
             {
-                DrawCircle(cx1, cy1, NEURON_RADIUS, IMG_FG_COLOR);
+                DrawCircle(cx1, cy1, NEURON_RADIUS, UI_FG_COLOR);
             }
         }
     }
@@ -134,16 +144,24 @@ void chart_min_max (Chart chart, float *min, float *max)
     }
 }
 
-
-void cost_graph_render (Chart chart, int xpos, int ypos, int img_w, int img_h)
+/*
+* Render cost graph
+* @param chart: Chart structure containing cost data
+* @param xpos: X position to start rendering the chart
+* @param ypos: Y position to start rendering the chart
+* @param img_w: Width of the chart image
+* @param img_h: Height of the chart image   
+*/
+void cost_graph_render(Chart chart, int xpos, int ypos, int img_w, int img_h)
 {
     float min, max;
     float PADDING_INNER_LEFT = img_w * 0.05f;
     float PADDING_INNER_RIGHT = PADDING_INNER_LEFT;
-    Color color_chart = RED;
+    Color color_chart = RED; 
     Color color_ref_y0 = WHITE;
     size_t n = chart.count;
     if (chart.items == NULL || chart.count == 0) {
+    
         DrawText("No data to display", xpos + 5, ypos + 5, img_h*0.04, color_ref_y0);
         return;
     }
@@ -163,9 +181,9 @@ void cost_graph_render (Chart chart, int xpos, int ypos, int img_w, int img_h)
     //if (min > max) min = max;
     if (n < 1000) n = 1000;   
     
-    char buffer_cost_text_value[64];
+    char buffer_text_value[64];
 
-    for (size_t i=0; i+1 < chart.count; ++i) {
+    for (size_t i = 0; i+1 < chart.count; ++i) {
 
         float x1 = xpos + (float) img_w / n*(i);
         float y1 = ypos + (1 - (chart.items[i] - min) / (max - min)) * img_h;
@@ -193,9 +211,15 @@ void cost_graph_render (Chart chart, int xpos, int ypos, int img_w, int img_h)
 
     // draw chart reference lines
     // horizontal X axis reference line at y = 0 <=> Cost = 0
+    float ref_x0 = xpos - 3 ; //+ (1 - (0 - min) / (max - min)) * img_w;
     float ref_y0 = ypos + (1 - (0 - min) / (max - min)) * img_h;
-    DrawLineEx((Vector2){xpos + 0, ref_y0}, (Vector2){xpos + img_w - 1, ref_y0}, img_h*0.004, color_ref_y0);
-    DrawText("Cost: 0", img_w*0.04 - xpos, ref_y0 - 2*img_h*0.04, img_h*0.04, color_ref_y0);     	
+    //float ref_xmax = img_w - xpos ; //+ (1 - (0 - min) / (max - min)) * img_w;
+   // float ref_ymax = ypos + (1 - (0 - min) / (max - min)) * img_h;
+    // y axis line  
+    DrawLineEx((Vector2){ref_x0, ref_y0}, (Vector2){ref_x0, ref_y0 - img_h}, img_h*0.004, color_ref_y0);
+    // x axis line & cost/y = 0 reference 
+    DrawLineEx((Vector2){ref_x0 - 1, ref_y0}, (Vector2){ ref_x0 + img_w, ref_y0}, img_h*0.004, color_ref_y0);
+    DrawText("0", (int)(ref_x0 - 5), (int)(ref_y0), (int)(img_h*0.04), color_ref_y0);     	
 
     // TODO : vertical Y axis reference for cost dynamic value display
     /*
@@ -212,7 +236,7 @@ void cost_graph_render (Chart chart, int xpos, int ypos, int img_w, int img_h)
 }
 
 
-void displayOriginalImage(int img_w, int img_h, Mat to, bool hide_null)
+void ascii_print_ref_data(int img_w, int img_h, Mat to, bool hide_null)
 {
     printf("*** 'ASCII styled': Original image pixel data: ***\n");
     
@@ -229,14 +253,14 @@ void displayOriginalImage(int img_w, int img_h, Mat to, bool hide_null)
     }      
 }
 
-void displayTrainingResult(NN nn, int img_w, int img_h, bool hide_null)
+void ascii_print_nn_out_data(NN nn, int img_w, int img_h, bool hide_null)
 {
     printf("*** 'ASCII styled': NN Post-Training Result image pixel data: ***\n");
 
     for (size_t y=0; y < (size_t)img_h; ++y){
         for (size_t x=0; x < (size_t)img_w ; ++x){
-            MAT_AT(NN_IN(nn), 0, 0) = (float) x / (28 - 1);
-            MAT_AT(NN_IN(nn), 0, 1) = (float) y / (28 - 1);
+            MAT_AT(NN_IN(nn), 0, 0) = (float) x / (img_w - 1);
+            MAT_AT(NN_IN(nn), 0, 1) = (float) y / (img_h - 1);
             nn_forward(nn);
             uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
 
@@ -248,6 +272,42 @@ void displayTrainingResult(NN nn, int img_w, int img_h, bool hide_null)
     }
 }
 
+void live_preview_render(Image img, Texture2D tex,
+     NN nn, int img_w, int img_h, 
+     int pos_x, int pos_y, int graph_w, int graph_h)
+{
+    for (size_t y = 0; y < (size_t) img_h; ++y){
+        for (size_t x = 0; x < (size_t) img_w; ++x){
+            MAT_AT(NN_IN(nn), 0, 0) = (float) x / (img_w - 1);
+            MAT_AT(NN_IN(nn), 0, 1) = (float) y / (img_h - 1);
+            nn_forward(nn);
+            uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+            // Draw the pixel in the live preview image
+            Color color_pixel = CLITERAL(Color) { pixel, pixel, pixel, 255 };
+            ImageDrawPixel(&img, x, y, color_pixel);
+        }
+    }
+    pos_x += graph_w ;
+    // Draw the live preview imag
+    DrawTextureEx(tex, CLITERAL(Vector2) { pos_x, pos_y }, 0, 10, WHITE);
+    UpdateTexture(tex, img.data);  
+}
+
+void live_original_img_render(Image img, Texture2D tex, Mat to, int img_w, int img_h, int pos_x, int pos_y, int graph_w, int graph_h)
+{
+    for (size_t y = 0; y < (size_t) img_h; ++y){
+        for (size_t x = 0; x < (size_t) img_w; ++x){
+            size_t idx = y * img_w + x;
+            uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
+            // Draw the pixel in the live preview image
+            Color color_pixel = CLITERAL(Color) { pixel, pixel, pixel, 255 };
+            ImageDrawPixel(&img, x, y, color_pixel);
+        }
+    }      
+    // Draw the original image
+    DrawTextureEx(tex, CLITERAL(Vector2) { pos_x, pos_y }, 0, 10, WHITE);
+    UpdateTexture(tex, img.data);   
+}
 
 /*
  * TODO: 
@@ -260,97 +320,205 @@ void displayTrainingResult(NN nn, int img_w, int img_h, bool hide_null)
  *  - add dynamic learn rate 
  *
  */
-NN displayTrainingUI(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t ITER,  char * title )
+NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EPOCHS,  char * title )
 {
+    // Initialize the GUI window, config flags, title, sizing and FPS,  
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(IMG_WIDTH, IMG_HEIGHT, title);
-    SetTargetFPS(FPS);
+    InitWindow(UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT, title);
+    SetTargetFPS(UI_FPS);
 
+    // TODO: add dynamic window layout setup/system
+    size_t num_of_widgets = 2; // 2 widget as default: neuron network and cost trace
+    
+    // initialize the cost trace chart
+    // This will hold the cost values during training and 
+    // will be used to render the cost graph
     Chart cost_trace = {0};
-    int num_of_widgets = UI_WIDGET_LAYOUT; // 2 widget as default: neuron network and cost trace
+    DArray command_list = {0};
+    // preview image
+    // while training, for performance concern, we want to avoid rendering a 'large' preview image
+    // ie: too many pixels per frame, at 60fps, the preview is an additional load to the ui
+    // TODO: 
+    //  we use the original image size for now, (ie: 28x28, as we can easily re-compute the size from the ti/to matrix rows count),
+    //  ie: original_img_size_w = sqrt(ti.rows) , this will work for any image data as long as it's not too large and has a ratio 1:1,
+    //  NEXT TODO: otherwise we use a default preview image size_t, that is a original_img_size_w = sqrt(ti.rows) ;
+    size_t original_img_size = sqrt(ti.rows) ; // sqrt(ti.rows) == sqrt(to.rows) 
+    size_t preview_width = original_img_size; //UI_WINDOW_WIDTH / num_of_widgets;
+    size_t preview_height = original_img_size; //  UI_WINDOW_HEIGHT / num_of_widgets; // preview_width, preview_height
+    Image view_image_1 = GenImageColor(preview_width, preview_height, BLACK);
+    Texture2D view_texture_1 = LoadTextureFromImage(view_image_1);
+    // Set the texture filter to bilinear for better quality
+    //    SetTextureFilter(view_texture_1, TEXTURE_FILTER_BILINEAR);
+    // Set the texture to the live preview image
+    //SetTextureWrap(view_texture_1, TEXTURE_WRAP_CLAMP); 
+    
+    Image view_image_2 = GenImageColor(preview_width, preview_height, BLACK);
+    Texture2D view_texture_2 = LoadTextureFromImage(view_image_2);
+   /*
+    //Texture2D view_texture_2_target = LoadTextureFromImage(view_img_1_target);
+    SetTextureFilter(view_texture_2, TEXTURE_FILTER_BILINEAR);
+    SetTextureWrap(view_texture_2, TEXTURE_WRAP_CLAMP); 
+    */ 
+    
     size_t iter = 0;
     bool stop_training = true;
+    
+    // GUI Render loop
+    // The loop will run until the user stops it or the maximum number of iterations is reached
     while (!WindowShouldClose())
     {
-        // SPACE: start/pause training
-        if (IsKeyPressed(KEY_SPACE)) {
-            stop_training = !stop_training;
-        }
-        // ESC: stop & exit training UI
-        else if (IsKeyPressed(KEY_ESCAPE)) {
-            CloseWindow();
-            return nn;
-        }
-        // R: reset/restart current training session
-        else if (IsKeyPressed(KEY_R)) {
-            stop_training = true;
-            // reset training
-            nn_rand(nn, -1, 1);
-            nn_zero(g);
-            //da_append(&cost_trace, 0.f);
-            iter = 0;
-            cost_trace.count = 0;
-        }
-        // UP/DOWN: increase/decrease learn rate
-        else if (IsKeyPressed(KEY_UP)) {
-            learn_rate += 0.1f;
-            if (learn_rate > 10.f) learn_rate = 10.f;
-        }
-        else if (IsKeyPressed(KEY_DOWN)) {
-            learn_rate -= 0.1f;
-            if (learn_rate < 0.0001f) learn_rate = 0.0001f;
-        }
-        // LEFT/RIGHT: decrease/increase max iterations
-        else if (IsKeyPressed(KEY_LEFT) && ITER > TRAINING_MIN_ITER) {
-            ITER -= TRAINING_MIN_ITER;
-            if (ITER < TRAINING_MIN_ITER) ITER = TRAINING_MIN_ITER;
-        }
-        else if (IsKeyPressed(KEY_RIGHT) && ITER < TRAINING_MAX_ITER) {
-            ITER += TRAINING_MIN_ITER;
-            if (ITER > TRAINING_MAX_ITER) ITER = TRAINING_MAX_ITER;
-        }
-        float cost = nn_cost(nn, ti, to);
-        // nn_finite_diff(nn, g, diff_delta, ti, to);
-        if (iter > ITER) {
-            stop_training = true;
-        }
-        
-        if (!stop_training) {
-        
-            if (iter >= 0 && iter < ITER) {
-                iter += 1;
-                nn_backprop(nn, g, ti, to);
-                nn_learn(nn, g, learn_rate);
-                da_append(&cost_trace, cost); 
+        // __ user input setup  __
+        {
+            // ESC: stop & exit training UI
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                CloseWindow();
+                return nn;
             }
+            // R: reset/restart current training session
+            else if (IsKeyPressed(KEY_R)) {
+                stop_training = true;
+                // reset training
+                nn_rand(nn, -1, 1);
+                //nn_zero(g); // reset gradient s may not be needed and be overwriten directly to save computation time
+                //da_append(&cost_trace, 0.f);
+                cost_trace.count = 0;
+                iter = 0;
+            }
+            // SPACE: start/pause training
+            else if (IsKeyPressed(KEY_SPACE)) { stop_training = !stop_training; }
+            // F11: toggle fullscreen mode
+            else if (IsKeyPressed(KEY_F11)) { ToggleFullscreen(); }   
+            // UP/DOWN: increase/decrease learn rate
+            else if (IsKeyPressed(KEY_UP) && learn_rate < 10.f) { learn_rate += 0.1f; }
+            else if (IsKeyPressed(KEY_DOWN) && learn_rate > 0.0001f) { learn_rate -= 0.1f; }
+            // LEFT/RIGHT: decrease/increase max iterations
+            else if (IsKeyPressed(KEY_LEFT) && EPOCHS > TRAINING_MIN_ITER) { EPOCHS -= TRAINING_MIN_ITER; }
+            else if (IsKeyPressed(KEY_RIGHT) && EPOCHS < TRAINING_MAX_ITER) { EPOCHS += TRAINING_MIN_ITER; }
+            /*
+                // M: toggle training method
+                else if (IsKeyPressed(KEY_M)) {
+                    if (strcmp(meth_name, "back_prop") == 0) { meth_name = "defined_gradient_difference"; }
+                    else if (strcmp(meth_name, "defined_gradient_difference") == 0) { meth_name = "stochastic_grad_diff"; } 
+                    else if (strcmp(meth_name, "stochastic_grad_diff") == 0) { meth_name = "adam"; }
+                    else if (strcmp(meth_name, "adam") == 0) { meth_name = "rmsprop"; }
+                    else { meth_name = "back_prop"; }
+                }
+            */
+            /*
+                // A: toggle activation function
+            else if (IsKeyPressed(KEY_A)) {
+                if (strcmp(act_name, "sigmoid") == 0) { act_name = "relu"; }
+                else if (strcmp(act_name, "relu") == 0) { act_name = "tanh"; }
+                else if (strcmp(act_name, "tanh") == 0) { act_name = "leaky_relu"; }
+                else if (strcmp(act_name, "leaky_relu") == 0) { act_name = "softmax"; }
+                else { act_name = "sigmoid"; }
+            } */
+        } // __ end of user input handling __        
+        // __ training loop __
+        float cost = 0.f; // cost = nn_cost(nn, ti, to);
+                    // nn_finite_diff(nn, g, diff_delta, ti, to);
+        if (iter >= EPOCHS) { stop_training = true; }
+        else if (!stop_training && iter < EPOCHS) {
+            
+            cost = nn_cost(nn, ti, to);
+            nn_backprop(nn, g, ti, to);
+            nn_learn(nn, g, learn_rate);
+            da_append(&cost_trace, cost); 
+            iter += 1;
         }
+
         BeginDrawing();
-        ClearBackground(IMG_BG_COLOR);
+        ClearBackground(UI_BG_COLOR);
         int w = GetRenderWidth();
         int h = GetRenderHeight();
-        int vpad = IMG_PADDING * w/100;
-        int hpad = IMG_PADDING * h/100;
-        
-        int graph_w  =  (w-2*vpad)/num_of_widgets;
+        // __ GUI layout __
+        // Calculate the padding for the window and widgets
+        int window_vpad = UI_WINDOW_PADDING * w/100;
+        int window_hpad = UI_WINDOW_PADDING * h/100;
 
-        int graph_h =   (h-2*hpad)*3/4;
-        int graph_pos_y = h/2 - graph_h/2;
-        int graph_pos_x ; // xpos;
+        int widget_pad = UI_WIDGET_PADDING * h/100; //h > w ? UI_WIDGET_PADDING * w/100 : UI_WIDGET_PADDING * h/100;
+        
+        int b_graph_w     = (w-2*window_vpad) / 4 ; //(num_of_widgets  1); //  * ( 1 + 2 * widget_pad)) ;
+        
+        int b_graph_h     = (h-2*window_hpad) * 3/4; //   2;  3/4;
+        int graph_pos_y = window_hpad; //h/2 - graph_h/2;
+        int graph_pos_x = window_vpad; //0; // xpos = vpad;
+        {   
+            // Render the neural network
+            int wid_graph_pos_y = h/2 - b_graph_h/2;
+            int wid_graph_pos_x = w - b_graph_w * 2 ; // xpos;
+            nn_render(nn, wid_graph_pos_x, wid_graph_pos_y, b_graph_w * 2, b_graph_h);
+        }
+
         {
-            graph_pos_x = w - vpad - graph_w; // xpos;
-            nn_render(nn, graph_pos_x, graph_pos_y, graph_w, graph_h);
-            graph_pos_y = h/2 - graph_h/2;
-            graph_pos_x = vpad; // xpos;
-            cost_graph_render(cost_trace, graph_pos_x, graph_pos_y, graph_w, graph_h);
-            
-            char buffer[256];
-            snprintf(buffer, sizeof(buffer),
-                   "Iterations: %zu/%zu - LearnRate: %f - Cost: %f",
-                   iter, ITER, learn_rate, cost);
-            DrawText(buffer, 0, 0, h*0.04, WHITE);
+            {   // Render the cost graph
+                int wid_graph_h = b_graph_h;  // reduce the height of the cost graph
+                int wid_graph_pos_y = h/2 - wid_graph_h/2   ; // h2 - graph_h/2;
+                int wid_graph_pos_x = window_vpad; // xpos;
+                cost_graph_render(cost_trace, wid_graph_pos_x, wid_graph_pos_y, b_graph_w, wid_graph_h);
+            }
+            {   // DATA PANEL ( IMG RENDER OR DATA DISPLAY ....  )
+                for (size_t y=0; y <  original_img_size; ++y){
+                    for (size_t x=0; x <  original_img_size; ++x){
+                        MAT_AT(NN_IN(nn), 0, 0) = (float) x / (original_img_size - 1);
+                        MAT_AT(NN_IN(nn), 0, 1) = (float) y / (original_img_size - 1);
+                        nn_forward(nn);
+                        uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+                        //img_out_pixels[y * img_out_w + x] = pixel;
+                        ImageDrawPixel(&view_image_1, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
+                    }
+                }
+                // Draw the texture to the screen
+                // Render the preview images: original and NN output
+                int wid_graph_w = b_graph_w / 4; ///3;  // reduce the height of the cost graph
+                int wid_graph_h =  b_graph_h / 4; ///3;  // reduce the height of the cost graph
+                int wid_graph_pos_y = h/2 - wid_graph_h/2; // h2 - graph_h/2;
+                int wid_graph_pos_x = window_vpad +  b_graph_w + wid_graph_w; // xpos;
+             
+             //   graph_pos_y = graph_pos_y + graph_h; //h2 - graph_h/2;
+               // graph_pos_x = window_vpad; // xpos;
+                //graph_h = graph_h / 3; // graph_h + 2*widget_pad; // preview_width;
+               // graph_w = graph_h; // preview_width;
+            //live_preview_render(view_image_1, view_texture_1, nn, original_img_size, original_img_size, graph_pos_x, graph_pos_y, graph_w, graph_h);
+                        // Uaapdate the texture with the new image data
+            UpdateTexture(view_texture_1, view_image_1.data);
+            // Draw the texture to the screen
+            DrawTextureEx(view_texture_1, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y }, 0, 10, WHITE);
+            // Render the second preview image
+           // graph_pos_x += graph_w + widget_pad; // xpos + graph_w + widget_pad
+            // Render the second preview image
+        //   DrawTextureEx(view_texture_2, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y }, 0, 10, WHITE);
+           
+            //live_preview_render(view_image_2, view_texture_2, nn, graph_w, graph_h, graph_pos_x + graph_w, graph_pos_y, graph_w, graph_h);
+          
+                for (size_t y=0; y <  original_img_size; ++y){
+                    for (size_t x=0; x <  original_img_size; ++x){
+                        size_t idx = y * original_img_size + x;
+                        uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
+                        ImageDrawPixel(&view_image_2, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
+                    }
+                }
+            }
+            {
+                // UI header text
+                int header_x = window_vpad;
+                int header_y = window_hpad;
+                int header_w = w - 2 * window_vpad;
+                int header_h = h * 0.08; // 8% of the window
+                DrawRectangleLines(header_x, header_y, header_w, header_h, UI_FG_COLOR); 
+                // Draw the title text
+                char buffer[256];
+                snprintf(buffer, sizeof(buffer),
+                   "Epoch: %zu/%zu - Rate: %f - Cost: %f - Algo: %s + %s", 
+                   iter, EPOCHS, learn_rate, cost, nn.method, nn.activation);
+                DrawText(buffer, header_x + h*0.02, header_y + h*0.02, h*0.04, WHITE);
+            }
+            Color color_white = WHITE;
+             if (iter == 0 || stop_training) {
+                DrawText("Press SPACE to train...", 150, 150, h*0.04, WHITE); //     
+            }
         }
         EndDrawing();
-        
     }
     CloseWindow();
     return nn;
@@ -387,7 +555,6 @@ int main(int argc, char * argv[])
         }
     }
     
-
     int buf_length = 0;
     unsigned char * buf = LoadFileData(arch_file_name, &buf_length);
 
@@ -403,56 +570,75 @@ int main(int argc, char * argv[])
         printf("%zu\n", arch_data);
     }
 
-    Mat t = mat_load(data_file_name)  ;
-    ML_ASSERT(arch.count > 1);
-  
-    size_t arch_in_sz = arch.items[0]    ;
-    size_t arch_out_sz = arch.items[arch.count - 1]    ;
-    ML_ASSERT(t.cols == arch_in_sz + arch_out_sz);
-   
-    NN nn = nn_alloc(arch.items, arch.count);
+    // Load the training data from the specified data file
+    Mat t = mat_load(data_file_name);
 
-     Mat ti = {
+    ML_ASSERT(arch.count > 1);
+    ML_ASSERT(t.rows > 0 && t.cols > 0);
+    
+    size_t arch_in_sz = arch.items[0] ;
+    size_t arch_out_sz = arch.items[arch.count - 1];
+    ML_ASSERT(t.cols == arch_in_sz + arch_out_sz);
+
+    // Set the input and output sizes based on the architecture
+    // Split the Loaded Trainining data Matrix into input and output matrices
+    // ti: input matrix, to: output matrix
+    Mat ti = {
         .es = &MAT_AT(t, 0, 0),
         .cols = arch_in_sz,
         .rows = t.rows,
         .stride = t.stride
     }; //  mat_alloc(td_rows, 2*BITS);
-
+    
     Mat to =  {
         .es = &MAT_AT(t, 0, arch_in_sz),
         .cols = arch_out_sz,
         .rows = t.rows,
         .stride = t.stride
     }; //mat_alloc(td_rows, BITS+1);
-   
-
+ 
+    // Allocate a neural network with the specified architecture
+    NN nn = nn_alloc(arch.items, arch.count);    
+    // Allocate a duplicate neural network for backpropagation
+    // This will hold the gradients during training
+    // This is used to update the weights and biases during training
     NN g = nn_alloc(arch.items, arch.count);
+    // Initialize the neural network with random weights and biases
     nn_rand(nn, -1, 1);
     
-    char * title = "ML image" ;
-    char * meth_name = "back_prop";
+    // TODO: make the title dynamic
+    char * title = "ML_LIB.C -- ML_Viewer -- NN Training GUI";
+    char * ui_title = "Image Upscaling Image with Neural Network";
 
-    float diff_delta = 1.f; //1e-1;
-    // TO DO: make the learning rate dynamic
-    float learn_rate = 1.f; //0.1f; 
-
-    size_t ITER = TRAINING_DEFAULT_ITER;
     
-    nn = displayTrainingUI(nn, g, ti, to, learn_rate, ITER, title);
+    // Set the training method and parameters
+    // TODO: use enum for training method and activation function
+    // For now, we will use backpropagation as the training method
+    char * meth_name = "back_prop"; // "defined_gradient_difference" or "back_prop" or "stochastic_grad_diff" or "adam" or "rmsprop"
+    // and sigmoid as the activation function
+    char * act_name = "sigmoid"; // "sigmoid" or "relu" or "tanh" or "leaky_relu" or "softmax"
+
+    size_t EPOCHS = TRAINING_DEFAULT_ITER;
+    // TO DO: make the learning rate a dynamic function that automatically adjusts
+    // For now, we will use a fixed learning rate 
+    float_t learn_rate = TRAINING_DEFAULT_LEARN_RATE; //1.f; //0.1f; 
+    float_t diff_delta = TRAINING_DEFAULT_DIFF_DELTA; //1.f; //1e-1;
+
+    
+    nn = display_training_gui(nn, g, ti, to, learn_rate, EPOCHS, title);
    
-    size_t img_h = sqrt(t.rows) ;
-    size_t img_w = img_h;
+    size_t original_img_size_h = sqrt(t.rows) ;
+    size_t original_img_size_w = original_img_size_h;
     //TODO: HANDLE ASPECT RATIO for non-square images
     // TO DO: handle non-square images WITH ASPECT RATIO FOR UPSCALING
 
-    if (img_w * img_h != t.rows) {
-        fprintf(stderr, "image size is not square: %zu x %zu\n", img_w, img_h);
+    if (original_img_size_w * original_img_size_h != t.rows) {
+        fprintf(stderr, "Ratio error: not supported, image size is not square: %zu x %zu\n", original_img_size_w, original_img_size_h);
         return 1;
     }
 
-    displayOriginalImage(img_w, img_h, to, false);
-    displayTrainingResult(nn, img_w, img_h, false);
+    ascii_print_ref_data(original_img_size_w, original_img_size_h, to, false);
+    ascii_print_nn_out_data(nn, original_img_size_w, original_img_size_h, false);
     
     size_t img_out_w = (size_t) out_rescaled_img_size_w;
     size_t img_out_h = (size_t) out_rescaled_img_size_h;
@@ -482,6 +668,7 @@ int main(int argc, char * argv[])
     }
    
     printf("upscaled image %zu x %zu saved as %s\n", img_out_w, img_out_h, out_rescaled_file_name); 
+    free(img_out_pixels);
     return 0;
     
     
