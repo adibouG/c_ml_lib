@@ -8,8 +8,10 @@
 #include <math.h>
 #include <stdio.h>
 
+//#include "raylib.h"
+
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#include "ext_libs/stb/stb_image.h"
 
 int main(int argc, char **argv)
 {

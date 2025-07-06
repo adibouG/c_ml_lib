@@ -22,13 +22,21 @@
 #endif
 
 typedef enum {
-    None = 0,
-    Sig,
-    Rel,
-    Sin,
-    count
+    Activ_None = 0,
+    Activ_Sig,
+    Activ_Rel,
+    Activ_Sin,
+    Activ_count
 } ActivationFn;
 
+
+typedef enum {
+    ALGO_None = 0,
+    ALGO_FiniteDif, // FiniteDifferentiation
+    ALGO_BackProp, // Backprop
+    ALGO_SGD, // Stochastic Gradient Descent
+    ALGO_count
+} ALGORITHM;
 
 typedef struct {
     size_t rows;
@@ -62,6 +70,7 @@ Mat mat_getrow(Mat m, size_t row);
 Mat mat_getsubmat(Mat m, size_t from_row, size_t to_row, size_t from_col, size_t to_col);
 
 void mat_shuffle_rows(Mat m);
+void mat_shuffle_rows_sync(Mat m, Mat m2);
 void mat_split_data(Mat m, int size, Mat * batch_list);
 Mat mat_sub(Mat m, size_t start);
 void mat_copy(Mat dst, Mat src);
@@ -100,8 +109,8 @@ typedef struct {
     Mat *ws;
     Mat *bs;
     Mat *as; // amount activations count +1
-    char * method;  // "sgd", "adam", etc.
-    char * activation;  // "sigm", "relu", etc.
+    ALGORITHM method;  // "sgd", "adam", etc.
+    ActivationFn activation;  // "sigm", "relu", etc.
 } NN;
 
 
@@ -170,13 +179,13 @@ void mat_activate_fn(Mat a, ActivationFn f)
     for (size_t r=0; r< a.rows; ++r){
         for (size_t c=0; c< a.cols; ++c){
             switch (f){
-                case Sig:
+                case Activ_Sig:
                     MAT_AT(a, r, c) = sigmf(MAT_AT(a, r, c));
                     break;
-                case Rel:
+                case Activ_Rel:
                     MAT_AT(a, r, c) = reluf(MAT_AT(a, r, c));
                     break;
-                case Sin:
+                case Activ_Sin:
                     MAT_AT(a, r, c) = sinf(MAT_AT(a, r, c));
                     break;
                 default:
@@ -265,6 +274,33 @@ void mat_shuffle_rows(Mat m)
             float tmp = MAT_AT(m, r, c);
             MAT_AT(m, r, c) = MAT_AT(m, r2, c);
             MAT_AT(m, r2, c) = tmp;
+        }
+    }
+}
+
+
+void mat_shuffle_rows_sync(Mat m, Mat m2)
+{
+    ML_ASSERT(m.rows == m2.rows) ;
+    for (size_t r=0; r < m.rows; ++r){
+        size_t r2 = r + rand() % (m.rows - r)  ; //r2 = r + rand() % m.rows; //  rand() % m.rows
+        if (r == r2) {
+            continue; // no need to swap with itself
+        }
+        float tmp;
+        // swap rows r and r2, column by column
+        for (size_t c=0; c < m.cols; ++c){
+            tmp = MAT_AT(m, r, c);
+            // swap rows r and r2, column by column
+            MAT_AT(m, r, c) = MAT_AT(m, r2, c);
+            MAT_AT(m, r, c) = MAT_AT(m, r2, c);
+            MAT_AT(m, r2, c) = tmp;
+        }
+        for (size_t c=0; c < m2.cols; ++c){
+            tmp = MAT_AT(m2, r, c);
+            MAT_AT(m2, r, c) = MAT_AT(m2, r2, c);
+            MAT_AT(m2, r, c) = MAT_AT(m2, r2, c);
+            MAT_AT(m2, r2, c) = tmp;
         }
     }
 }

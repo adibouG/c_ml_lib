@@ -70,15 +70,80 @@ const Color UI_HOVER_COLOR = LIGHTGRAY;
 const Color COLOR_LOW_ACTIVITY = SKYBLUE;
 const Color COLOR_HIGH_ACTIVITY = GREEN;
 
-void nn_render(NN nn, int pos_x, int pos_y, int w, int h) 
+#define RENDER_WIDTH 512
+#define RENDER_HEIGHT 512
+#define RENDER_FPS 60
+//#define RENDER_WITH_RAYLIB
+uint8_t pixels[RENDER_WIDTH * RENDER_HEIGHT]; // Array to store the pixel data
+    
+const char upscale_screenshot_file[64] = "upscale_screenshot.png";
+const char upscale_video_file[64] = "upscale_video.mp4";
+const char ui_screenshot_file[64] = "ui_screenshot.png";
+const char ui_video_file[64] = "ui_video.mp4";
+
+
+void render_ui_screenshot(const char * file_name)
+{
+    TakeScreenshot(file_name);
+    printf("Screenshot saved to %s\n", file_name);
+}
+
+
+void render_ui_video(const char * file_name, bool * record_frames, 
+    size_t epoch, size_t frame)
+{
+  
+    // Create a video writer
+    //VideoWriter writer = VideoWriterCreate(file_name, RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS);
+    while (record_frames) {
+        
+        /*
+        for (int i = 0; i < RENDER_FPS * 10; i++) { // 10 seconds of video
+        // Update the frame data
+        for (size_t y = 0; y < RENDER_HEIGHT; ++y) {
+            for (size_t x = 0; x < RENDER_WIDTH; ++x) {
+                pixels[y * RENDER_WIDTH + x] = (uint8_t)((x + y + frame) % 256);
+            }
+        }
+        // Write the frame to the video
+        //VideoWriterWriteFrame(writer, pixels);
+        frame++;
+        */
+    }
+    return;
+}
+
+
+void render_upscale_video(NN nn, const char * file_name) 
+{
+    return;
+}
+
+void render_upscale_screenshot(NN nn, const char * file_name)
+{
+
+    for (size_t y = 0; y < (size_t) RENDER_HEIGHT; ++y){
+        for (size_t x = 0; x < (size_t) RENDER_WIDTH; ++x){
+            MAT_AT(NN_IN(nn), 0, 0) = (float) x / (RENDER_WIDTH - 1);
+            MAT_AT(NN_IN(nn), 0, 1) = (float) y / (RENDER_HEIGHT - 1);
+            nn_forward(nn);
+            uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+            // Draw the pixel in the live preview image
+            Color color_pixel = CLITERAL(Color) { pixel, pixel, pixel, 255 };
+//            ImageDrawPixel(&img, x, y, color_pixel);
+        }
+    }
+}
+
+void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h) 
 {
     size_t arch_count = nn.count + 1;
-    float  nn_layer_pad_h = w / arch_count;
+    float  nn_layer_pad_h = ui_w / arch_count;
 
-    size_t resiz_factor = h > w ? h : w;
+    size_t resiz_factor = ui_h > ui_w ? ui_h : ui_w;
 
-    float NEURON_RADIUS = 10 + (h/50) ;
-    float CONX_WIDTH = 2 + ((h)/100)/250;
+    float NEURON_RADIUS = 10 + (ui_h/50) ;
+    float CONX_WIDTH = 2 + ((ui_h)/100)/250;
 
     Color activate = COLOR_HIGH_ACTIVITY;
     Color deactivate = COLOR_LOW_ACTIVITY;
@@ -87,7 +152,7 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h)
     //  - add dynamic color for neuron activity 
     for (size_t l=0; l < arch_count; ++l) {
 
-        int layer_pad_v1 = h / nn.as[l].cols;
+        int layer_pad_v1 = ui_h / nn.as[l].cols;
 
         for (size_t i=0; i < nn.as[l].cols; ++i) {
 
@@ -97,7 +162,7 @@ void nn_render(NN nn, int pos_x, int pos_y, int w, int h)
             // neuron inter layers connection network
             if (l + 1 < arch_count)
             {
-                int layer_pad_v2 = h / nn.as[l+1].cols;
+                int layer_pad_v2 = ui_h / nn.as[l+1].cols;
 
                 for (size_t j=0; j < nn.as[l+1].cols; ++j) {
 
@@ -320,13 +385,46 @@ void live_original_img_render(Image img, Texture2D tex, Mat to, int img_w, int i
  *  - add dynamic learn rate 
  *
  */
-NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EPOCHS,  char * title )
+NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float diff, size_t max_epoch,  char * title)
 {
-    // Initialize the GUI window, config flags, title, sizing and FPS,  
+        // Initialize the GUI window, config flags, title, sizing and FPS,  
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(UI_WINDOW_WIDTH, UI_WINDOW_HEIGHT, title);
     SetTargetFPS(UI_FPS);
 
+    // preview image
+    // while training, for performance concern, we want to avoid rendering a 'large' preview image
+    // ie: too many pixels per frame, at 60fps, the preview is an additional load to the ui
+    // TODO: 
+    //  we use the original image size for now, (ie: 28x28, as we can easily re-compute the size from the ti/to matrix rows count),
+    //  ie: original_img_size_w = sqrt(ti.rows) , this will work for any image data as long as it's not too large and has a ratio 1:1,
+    //  NEXT TODO: otherwise we use a default preview image size_t, that is a original_img_size_w = sqrt(ti.rows) ;
+    int original_img_size = sqrt(ti.rows) ; // sqrt(ti.rows) == sqrt(to.rows) 
+    size_t preview_width = original_img_size; //UI_WINDOW_WIDTH / num_of_widgets;
+    size_t preview_height = original_img_size; //  UI_WINDOW_HEIGHT / num_of_widgets; // preview_width, preview_height
+    Image view_image_1 = GenImageColor(preview_width, preview_height, BLACK);
+    printf("Preview image size: %zu x %zu\n", max_epoch, max_epoch);
+    Texture2D view_texture_1 = LoadTextureFromImage(view_image_1);
+    printf("Preview image size: %zu x %zu\n", max_epoch, max_epoch);
+    // Set the texture filter to bilinear for better quality
+    // Set the texture to the live preview image
+    //SetTextureWrap(view_texture_1, TEXTURE_WRAP_CLAMP); 
+    //    SetTextureFilter(view_texture_1, TEXTURE_FILTER_BILINEAR);
+    Image view_image_2 = GenImageColor(preview_width, preview_height, BLACK);
+    Texture2D view_texture_2 = LoadTextureFromImage(view_image_2);
+   /*
+    //Texture2D view_texture_2_target = LoadTextureFromImage(view_img_1_target);
+    SetTextureFilter(view_texture_2, TEXTURE_FILTER_BILINEAR);
+    SetTextureWrap(view_texture_2, TEXTURE_WRAP_CLAMP); 
+    */ 
+    for (size_t y=0; y <  original_img_size; ++y){
+        for (size_t x=0; x <  original_img_size; ++x){
+            size_t idx = y * original_img_size + x;
+            uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
+            ImageDrawPixel(&view_image_2, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
+        }
+    }
+               
     // TODO: add dynamic window layout setup/system
     size_t num_of_widgets = 2; // 2 widget as default: neuron network and cost trace
     
@@ -335,34 +433,19 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EP
     // will be used to render the cost graph
     Chart cost_trace = {0};
     DArray command_list = {0};
-    // preview image
-    // while training, for performance concern, we want to avoid rendering a 'large' preview image
-    // ie: too many pixels per frame, at 60fps, the preview is an additional load to the ui
-    // TODO: 
-    //  we use the original image size for now, (ie: 28x28, as we can easily re-compute the size from the ti/to matrix rows count),
-    //  ie: original_img_size_w = sqrt(ti.rows) , this will work for any image data as long as it's not too large and has a ratio 1:1,
-    //  NEXT TODO: otherwise we use a default preview image size_t, that is a original_img_size_w = sqrt(ti.rows) ;
-    size_t original_img_size = sqrt(ti.rows) ; // sqrt(ti.rows) == sqrt(to.rows) 
-    size_t preview_width = original_img_size; //UI_WINDOW_WIDTH / num_of_widgets;
-    size_t preview_height = original_img_size; //  UI_WINDOW_HEIGHT / num_of_widgets; // preview_width, preview_height
-    Image view_image_1 = GenImageColor(preview_width, preview_height, BLACK);
-    Texture2D view_texture_1 = LoadTextureFromImage(view_image_1);
-    // Set the texture filter to bilinear for better quality
-    //    SetTextureFilter(view_texture_1, TEXTURE_FILTER_BILINEAR);
-    // Set the texture to the live preview image
-    //SetTextureWrap(view_texture_1, TEXTURE_WRAP_CLAMP); 
-    
-    Image view_image_2 = GenImageColor(preview_width, preview_height, BLACK);
-    Texture2D view_texture_2 = LoadTextureFromImage(view_image_2);
-   /*
-    //Texture2D view_texture_2_target = LoadTextureFromImage(view_img_1_target);
-    SetTextureFilter(view_texture_2, TEXTURE_FILTER_BILINEAR);
-    SetTextureWrap(view_texture_2, TEXTURE_WRAP_CLAMP); 
-    */ 
-    
-    size_t iter = 0;
+    size_t epoch = 0;
+    size_t iteration = 0;
+    size_t number_of_samples = ti.rows; // number of samples in the training data
+    size_t batch_count = 28; // default batch count
+    size_t batch_size = number_of_samples / batch_count; // number_of_samples / batch_count; // default batch size
+    if (number_of_samples % batch_count != 0) {
+        batch_size = (number_of_samples + (batch_count - 1)) / batch_count ; // 1000 samples per batch
+    } 
+    //size_t iterations_per_frame = 60;
+    //size_t epochs_per_frame = 60;
     bool stop_training = true;
-    
+
+
     // GUI Render loop
     // The loop will run until the user stops it or the maximum number of iterations is reached
     while (!WindowShouldClose())
@@ -382,7 +465,15 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EP
                 //nn_zero(g); // reset gradient s may not be needed and be overwriten directly to save computation time
                 //da_append(&cost_trace, 0.f);
                 cost_trace.count = 0;
-                iter = 0;
+                epoch = 0;
+            }
+            // S: render screenshot
+            else if (IsKeyPressed(KEY_S)) {
+         //      render_upscale_screenshot(nn, upscale_screenshot_file);
+            }
+            // S: render screenshot
+            else if (IsKeyPressed(KEY_V)) {
+          //      render_upscale_video(nn, upscale_video_file);
             }
             // SPACE: start/pause training
             else if (IsKeyPressed(KEY_SPACE)) { stop_training = !stop_training; }
@@ -392,8 +483,8 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EP
             else if (IsKeyPressed(KEY_UP) && learn_rate < 10.f) { learn_rate += 0.1f; }
             else if (IsKeyPressed(KEY_DOWN) && learn_rate > 0.0001f) { learn_rate -= 0.1f; }
             // LEFT/RIGHT: decrease/increase max iterations
-            else if (IsKeyPressed(KEY_LEFT) && EPOCHS > TRAINING_MIN_ITER) { EPOCHS -= TRAINING_MIN_ITER; }
-            else if (IsKeyPressed(KEY_RIGHT) && EPOCHS < TRAINING_MAX_ITER) { EPOCHS += TRAINING_MIN_ITER; }
+            else if (IsKeyPressed(KEY_LEFT) && max_epoch > TRAINING_MIN_ITER) { max_epoch -= TRAINING_MIN_ITER; }
+            else if (IsKeyPressed(KEY_RIGHT) && max_epoch < TRAINING_MAX_ITER) { max_epoch += TRAINING_MIN_ITER; }
             /*
                 // M: toggle training method
                 else if (IsKeyPressed(KEY_M)) {
@@ -415,45 +506,117 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EP
             } */
         } // __ end of user input handling __        
         // __ training loop __
-        float cost = 0.f; // cost = nn_cost(nn, ti, to);
-                    // nn_finite_diff(nn, g, diff_delta, ti, to);
-        if (iter >= EPOCHS) { stop_training = true; }
-        else if (!stop_training && iter < EPOCHS) {
+       
+        float total_cost = 0.f; 
+        // cost = nn_cost(nn, ti, to);
+        if (epoch >= max_epoch ) { stop_training = true; }
+        
+        else if (!stop_training && epoch < max_epoch) {
+
             
+            //Mat batch_list[batch_count][2]; // list of batches
+            
+         
+            for (size_t batch_i = 0; batch_i < batch_count; ++batch_i) {
+        // Initialize the batch input and output matrices
+        // Each batch will have a size of batch_size
+        // and will be filled with the corresponding data from ti and to matrices
+                size_t start_idx = batch_i * batch_size;
+                float cost = 0.f;
+                Mat batch_ti = { 
+                    .es = &MAT_AT(ti, start_idx, 0),
+                    .cols = ti.cols,
+                    .rows = batch_size,
+                    .stride = ti.stride
+                }; // batch input data
+        
+                Mat batch_to = {
+                    .es = &MAT_AT(to, start_idx, 0),
+                    .cols = to.cols, 
+                    .rows = batch_size, 
+                    .stride = to.stride
+                }; // batch output data
+        
+                nn_backprop(nn, g, batch_ti, batch_to);
+                nn_learn(nn, g, learn_rate);
+                cost = nn_cost(nn, batch_ti, batch_to); //nn_cost(nn, ti, to);
+                cost /= batch_size; // average cost over the batch
+                total_cost += cost; // accumulate cost for the epoch
+                //da_append(&cost_trace, cost); 
+            }
+            total_cost /= batch_count; // accumulate cost for the epoch
+            da_append(&cost_trace, total_cost); 
+            mat_shuffle_rows_sync(ti, to);
+            epoch += 1;
+
+            
+            /*
+            batch_list[batch_i][0] = batch_ti; // input data
+            batch_list[batch_i][1] = batch_to; // output data
+        
+            } // __ end of batch list initialization __
+            //if (nn.method == ALGO_SGD) {
+                // Stochastic Gradient Descent training method
+                for (size_t batch_i = 0; batch_i < batch_count; ++batch_i ) {
+                    Mat batch_ti = batch_list[batch_i][0];
+                    Mat batch_to = batch_list[batch_i][1];  
+             //       for (size_t i = 0; i < batch_size; ++i ) {
+                    nn_backprop(nn, g, batch_ti, batch_to);
+                    nn_learn(nn, g, learn_rate);
+                    cost += nn_cost(nn, batch_ti, batch_to); //nn_cost(nn, ti, to);
+                    iteration += 1;
+                }
+                cost /= iteration; // average cost over the batch
+                da_append(&cost_trace, cost); 
+                epoch += 1;
+            
+                /*
             cost = nn_cost(nn, ti, to);
-            nn_backprop(nn, g, ti, to);
-            nn_learn(nn, g, learn_rate);
-            da_append(&cost_trace, cost); 
-            iter += 1;
-        }
+            if (nn.method == ALGO_BackProp) {
+
+                // Backpropagation training method
+                nn_backprop(nn, g, ti, to);
+            }
+            else if (nn.method == ALGO_FiniteDif) {
+                
+                // Finite Differentiation training method
+                nn_finite_diff(nn, g, diff, ti, to);
+            }
+           
+                nn_learn(nn, g, learn_rate);
+                da_append(&cost_trace, cost); 
+            }
+       */
+        } // __ end of training loop __
 
         BeginDrawing();
         ClearBackground(UI_BG_COLOR);
-        int w = GetRenderWidth();
-        int h = GetRenderHeight();
+        int ui_w = GetRenderWidth();
+        int ui_h = GetRenderHeight();
         // __ GUI layout __
         // Calculate the padding for the window and widgets
-        int window_vpad = UI_WINDOW_PADDING * w/100;
-        int window_hpad = UI_WINDOW_PADDING * h/100;
+        int window_vpad = UI_WINDOW_PADDING * ui_w/100;
+        int window_hpad = UI_WINDOW_PADDING * ui_h/100;
 
-        int widget_pad = UI_WIDGET_PADDING * h/100; //h > w ? UI_WIDGET_PADDING * w/100 : UI_WIDGET_PADDING * h/100;
+        int widget_pad = UI_WIDGET_PADDING * ui_w/ui_h * 100; //h > w ? UI_WIDGET_PADDING * w/100 : UI_WIDGET_PADDING * h/100;
         
-        int b_graph_w     = (w-2*window_vpad) / 4 ; //(num_of_widgets  1); //  * ( 1 + 2 * widget_pad)) ;
+        int b_graph_w     = (ui_w-2*window_vpad) / 4 ; //(num_of_widgets  1); //  * ( 1 + 2 * widget_pad)) ;
         
-        int b_graph_h     = (h-2*window_hpad) * 3/4; //   2;  3/4;
+        int b_graph_h     = (ui_h-2*window_hpad) * 3/4; //   2;  3/4;
         int graph_pos_y = window_hpad; //h/2 - graph_h/2;
         int graph_pos_x = window_vpad; //0; // xpos = vpad;
         {   
             // Render the neural network
-            int wid_graph_pos_y = h/2 - b_graph_h/2;
-            int wid_graph_pos_x = w - b_graph_w * 2 ; // xpos;
+            int wid_graph_pos_y = ui_h/2 - b_graph_h/2;
+            int wid_graph_pos_x = ui_w - b_graph_w * 2 ; // xpos;
             nn_render(nn, wid_graph_pos_x, wid_graph_pos_y, b_graph_w * 2, b_graph_h);
         }
 
         {
+            Color color_white = WHITE;
             {   // Render the cost graph
                 int wid_graph_h = b_graph_h;  // reduce the height of the cost graph
-                int wid_graph_pos_y = h/2 - wid_graph_h/2   ; // h2 - graph_h/2;
+                int wid_graph_pos_y = ui_h/2 - wid_graph_h/2   ; // h2 - graph_h/2;
                 int wid_graph_pos_x = window_vpad; // xpos;
                 cost_graph_render(cost_trace, wid_graph_pos_x, wid_graph_pos_y, b_graph_w, wid_graph_h);
             }
@@ -472,18 +635,20 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EP
                 // Render the preview images: original and NN output
                 int wid_graph_w = b_graph_w / 4; ///3;  // reduce the height of the cost graph
                 int wid_graph_h =  b_graph_h / 4; ///3;  // reduce the height of the cost graph
-                int wid_graph_pos_y = h/2 - wid_graph_h/2; // h2 - graph_h/2;
+                int wid_graph_pos_y = ui_h/2 - wid_graph_h/2; // h2 - graph_h/2;
                 int wid_graph_pos_x = window_vpad +  b_graph_w + wid_graph_w; // xpos;
-             
+                int scale = 5; // scale factor for the preview images
+                
+        
              //   graph_pos_y = graph_pos_y + graph_h; //h2 - graph_h/2;
                // graph_pos_x = window_vpad; // xpos;
                 //graph_h = graph_h / 3; // graph_h + 2*widget_pad; // preview_width;
                // graph_w = graph_h; // preview_width;
             //live_preview_render(view_image_1, view_texture_1, nn, original_img_size, original_img_size, graph_pos_x, graph_pos_y, graph_w, graph_h);
                         // Uaapdate the texture with the new image data
-            UpdateTexture(view_texture_1, view_image_1.data);
+                UpdateTexture(view_texture_1, view_image_1.data);
             // Draw the texture to the screen
-            DrawTextureEx(view_texture_1, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y }, 0, 10, WHITE);
+                DrawTextureEx(view_texture_1, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y }, 0, scale, color_white);
             // Render the second preview image
            // graph_pos_x += graph_w + widget_pad; // xpos + graph_w + widget_pad
             // Render the second preview image
@@ -491,31 +656,27 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to, float learn_rate, size_t EP
            
             //live_preview_render(view_image_2, view_texture_2, nn, graph_w, graph_h, graph_pos_x + graph_w, graph_pos_y, graph_w, graph_h);
           
-                for (size_t y=0; y <  original_img_size; ++y){
-                    for (size_t x=0; x <  original_img_size; ++x){
-                        size_t idx = y * original_img_size + x;
-                        uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
-                        ImageDrawPixel(&view_image_2, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
-                    }
-                }
+                UpdateTexture(view_texture_2, view_image_2.data);
+            // Draw the texture to the screen
+                DrawTextureEx(view_texture_2, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y - wid_graph_h }, 0, scale, color_white);
+       
             }
             {
                 // UI header text
                 int header_x = window_vpad;
                 int header_y = window_hpad;
-                int header_w = w - 2 * window_vpad;
-                int header_h = h * 0.08; // 8% of the window
+                int header_w = ui_w - 2 * window_vpad;
+                int header_h = (ui_h  - 2 * window_vpad) * 0.08; // 8% of the window
                 DrawRectangleLines(header_x, header_y, header_w, header_h, UI_FG_COLOR); 
                 // Draw the title text
                 char buffer[256];
                 snprintf(buffer, sizeof(buffer),
-                   "Epoch: %zu/%zu - Rate: %f - Cost: %f - Algo: %s + %s", 
-                   iter, EPOCHS, learn_rate, cost, nn.method, nn.activation);
-                DrawText(buffer, header_x + h*0.02, header_y + h*0.02, h*0.04, WHITE);
+                   "Epoch: %zu/%zu - Rate: %f - Cost: %f - Algo: %d & Act: %d", 
+                   epoch, max_epoch, learn_rate, total_cost, nn.method, nn.activation);
+                DrawText(buffer, header_x + ui_h*0.02, header_y + ui_h*0.02, ui_h*0.04, color_white);
             }
-            Color color_white = WHITE;
-             if (iter == 0 || stop_training) {
-                DrawText("Press SPACE to train...", 150, 150, h*0.04, WHITE); //     
+             if (epoch == 0 || stop_training) {
+                DrawText("Press SPACE to train...", 150, 150, ui_h*0.04, color_white); //     
             }
         }
         EndDrawing();
@@ -554,7 +715,7 @@ int main(int argc, char * argv[])
             out_rescaled_img_size_h = out_rescaled_img_size_w;
         }
     }
-    
+    printf("Upscaled image size: %d x %d\n", out_rescaled_img_size_w, out_rescaled_img_size_h);
     int buf_length = 0;
     unsigned char * buf = LoadFileData(arch_file_name, &buf_length);
 
@@ -576,11 +737,12 @@ int main(int argc, char * argv[])
     ML_ASSERT(arch.count > 1);
     ML_ASSERT(t.rows > 0 && t.cols > 0);
     
+
     size_t arch_in_sz = arch.items[0] ;
     size_t arch_out_sz = arch.items[arch.count - 1];
     ML_ASSERT(t.cols == arch_in_sz + arch_out_sz);
 
-    // Set the input and output sizes based on the architecture
+   // Set the input and output sizes based on the architecture
     // Split the Loaded Trainining data Matrix into input and output matrices
     // ti: input matrix, to: output matrix
     Mat ti = {
@@ -596,7 +758,6 @@ int main(int argc, char * argv[])
         .rows = t.rows,
         .stride = t.stride
     }; //mat_alloc(td_rows, BITS+1);
- 
     // Allocate a neural network with the specified architecture
     NN nn = nn_alloc(arch.items, arch.count);    
     // Allocate a duplicate neural network for backpropagation
@@ -609,40 +770,40 @@ int main(int argc, char * argv[])
     // TODO: make the title dynamic
     char * title = "ML_LIB.C -- ML_Viewer -- NN Training GUI";
     char * ui_title = "Image Upscaling Image with Neural Network";
-
+    
     
     // Set the training method and parameters
     // TODO: use enum for training method and activation function
-    // For now, we will use backpropagation as the training method
-    char * meth_name = "back_prop"; // "defined_gradient_difference" or "back_prop" or "stochastic_grad_diff" or "adam" or "rmsprop"
-    // and sigmoid as the activation function
-    char * act_name = "sigmoid"; // "sigmoid" or "relu" or "tanh" or "leaky_relu" or "softmax"
+    //nn.method = ALGO_SGD; // Set the training method
+    //nn.activation = Activ_Sig; // Set the activation function
 
     size_t EPOCHS = TRAINING_DEFAULT_ITER;
     // TO DO: make the learning rate a dynamic function that automatically adjusts
     // For now, we will use a fixed learning rate 
     float_t learn_rate = TRAINING_DEFAULT_LEARN_RATE; //1.f; //0.1f; 
     float_t diff_delta = TRAINING_DEFAULT_DIFF_DELTA; //1.f; //1e-1;
-
     
-    nn = display_training_gui(nn, g, ti, to, learn_rate, EPOCHS, title);
-   
+    
+    printf("Training data: %zu rows, %zu cols\n", t.rows, t.cols);
+
+    nn = display_training_gui(nn, g, ti, to, learn_rate, diff_delta, EPOCHS, title);
+    
     size_t original_img_size_h = sqrt(t.rows) ;
     size_t original_img_size_w = original_img_size_h;
     //TODO: HANDLE ASPECT RATIO for non-square images
     // TO DO: handle non-square images WITH ASPECT RATIO FOR UPSCALING
-
+    
     if (original_img_size_w * original_img_size_h != t.rows) {
         fprintf(stderr, "Ratio error: not supported, image size is not square: %zu x %zu\n", original_img_size_w, original_img_size_h);
         return 1;
     }
-
+    
     ascii_print_ref_data(original_img_size_w, original_img_size_h, to, false);
     ascii_print_nn_out_data(nn, original_img_size_w, original_img_size_h, false);
     
     size_t img_out_w = (size_t) out_rescaled_img_size_w;
     size_t img_out_h = (size_t) out_rescaled_img_size_h;
- 
+    
     //uint8_t * img_out_pixels = (uint8_t *) malloc(img_out_h * img_out_w * sizeof(uint8_t));
     uint8_t * img_out_pixels = malloc(img_out_h * img_out_w * sizeof(*img_out_pixels));
     assert(img_out_pixels != NULL);
@@ -657,9 +818,6 @@ int main(int argc, char * argv[])
         }
     }
  
-    stbi_write_png(out_rescaled_file_name, img_out_w, img_out_h, 1, img_out_pixels, 0);
-    printf("upscaled image %zu x %zu saved as %s\n", img_out_w, img_out_h, out_rescaled_file_name);
-
     // save upscaled image
     if (!stbi_write_png(out_rescaled_file_name, img_out_w, img_out_h, 1, img_out_pixels, 0)) 
     {
