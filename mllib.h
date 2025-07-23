@@ -32,7 +32,7 @@ typedef enum {
 
 typedef enum {
     ALGO_None = 0,
-    ALGO_FiniteDif, // FiniteDifferentiation
+    ALGO_FiniteDif, // FiniteDifference
     ALGO_BackProp, // Backprop
     ALGO_SGD, // Stochastic Gradient Descent
     ALGO_count
@@ -94,7 +94,37 @@ Mat img_to_mat(const char * filename);
 
 #define MAT_PRINT(m) mat_print(m, #m, 0);
 #define MAT_AT(m, r, c) (m).es[(r)* (m).stride + (c)]
-#define MAT_Wstride_AT(m, r, c) (m).es[(r)*(m).stride + (c)]
+
+
+typedef struct { 
+    float r, g, b, a; 
+} PixelRGBA;
+
+int32_t pixel_rgba_to_int(PixelRGBA p)
+{
+    return ((uint32_t) (p.r * 255) << 24) | ((uint32_t)(p.g * 255) << 16) |
+           ((uint32_t)(p.b * 255) << 8) | (uint32_t)(p.a * 255);
+} 
+
+PixelRGBA pixel_int_to_rgba(uint32_t p)
+{
+    return (PixelRGBA){
+        .r = ((p >> 24) & 0xFF) / 255.f,
+        .g = ((p >> 16) & 0xFF) / 255.f,
+        .b = ((p >> 8) & 0xFF) / 255.f,
+        .a = (p & 0xFF) / 255.f,
+    };
+}
+
+#define PRINT_AS_HEX(p) \
+    printf("0x%08x\n", p)
+
+typedef struct {
+    size_t width;
+    size_t height;
+    PixelRGBA *data;
+} ImageRGBA;
+
 
 
 
@@ -114,9 +144,18 @@ typedef struct {
 } NN;
 
 
+typedef struct {
+    NN nn;
+    NN g;
+} NN_wG;
+
+
 void nn_print (NN nn, const char * layer);
 void nn_rand(NN m, float min, float max);
 NN nn_alloc(size_t * arch, size_t arch_count);
+
+NN nn_init(Arch arch);
+NN_wG nn_g_init(Arch arch);
 
 void nn_zero(NN n);
 float nn_cost (NN nn, Mat t_in, Mat t_out);
@@ -193,7 +232,6 @@ void mat_activate_fn(Mat a, ActivationFn f)
                     break;
             }
         }
-
     }
 }
 
@@ -325,8 +363,8 @@ void mat_split_data(Mat m, int size, Mat * batch_list)
         return;
     }
    
-    if (m.rows % size == 0) { // rows must be divisible by size
-        int count = m.rows / size;
+    if ((int) m.rows % size == 0) { // rows must be divisible by size
+        int count = (int) m.rows / size;
         for (int i=0; i < count; ++i){
             size_t start_row = i % m.rows; // size; // i * (m.rows / size);
             size_t end_row = start_row + size - 1;
@@ -445,14 +483,14 @@ int mat_save(const char * filename, Mat m)
     }
 
     fclose(data_out);
-    fflush(stdout);
+    //fflush(stdout);
 
     printf("mat_save()........Results view:.....\n");
     printf("rows: %zu, cols: %zu\n", m.rows, m.cols);
     printf("size: %zu bytes\n", sizeof(*m.es)*m.rows*m.cols + sizeof(magic) + sizeof(m.rows) + sizeof(m.cols));
     printf("magic: %s\n", magic);
     printf("data saved to %s\n", filename);
-    printf("mat_save()..................:.....\n");
+    printf("mat_save()..................:End.....\n");
 
     return 0;
 }
@@ -464,7 +502,7 @@ Mat mat_load(const char * filepath)
     Mat m;
     if (data_in == NULL) {
         fprintf(stderr, "Could not open file %s\n",filepath);
-        m = mat_alloc(0, 0);
+        //m = mat_alloc(0, 0);
         fclose(data_in);
         return m;
     }
@@ -491,13 +529,14 @@ Mat mat_load(const char * filepath)
         fprintf (stderr, "magic_le (reversed, little endianess) mismatch too 0x%llx != 0x6d61742e64617461\n", magic_le);
         fprintf(stderr, "file %s is not a valid .mat file\n", filepath);        
         fclose(data_in);
-        m = mat_alloc(0, 0);
+
+        //m = mat_alloc(0, 0);
         return m;
     }
     
     size_t rows, cols;
-    fread(&rows, sizeof (rows), 1 , data_in);
-    fread(&cols, sizeof (cols), 1 , data_in);
+    fread(&rows, sizeof(rows), 1, data_in);
+    fread(&cols, sizeof(cols), 1, data_in);
     m = mat_alloc(rows, cols);
     size_t n = fread(m.es, sizeof (*m.es), rows * cols, data_in);
     while( n < cols*rows )
@@ -507,18 +546,57 @@ Mat mat_load(const char * filepath)
     }
     if (ferror(data_in)) {
         fprintf(stderr, "read error on file %s\n", filepath);
-        m = mat_alloc(0, 0);
+       //m = mat_alloc(0, 0);
         return m;
     }
     fclose(data_in);
-    fflush(stdout);
+   // fflush(stdout);
     printf("Matrix data loaded from %s\n", filepath);
     return m;
 }
 
-/*
-Mat img_to_mat(const char * filename)
+/*/
+Mat img_to_mat(const float * img , const char * outname)
 {
+       
+    char * filename = imgfile; //argv[1];
+    char * dataname = strlen(outname) > 0   ? outname : "imgpixel.mat";
+   
+    printf("input filename: %s\noutput filename: %s\n", filename, dataname);
+    
+    int img_w, img_h, img_c;
+    uint32_t * pixel_data = (uint32_t *) stbi_load(filename, &img_w, &img_h, &img_c, 0);
+    
+    if (pixel_data == NULL) {
+        fprintf(stderr, "Could not load image %s\n", filename);
+        return 1;
+    }
+
+
+    printf("filename: %s:\n\
+        - size: %d x %d (%f\n)\n\
+        - bits/pixel: %d (%dx8)\n",
+         filename, img_w, img_h, img_w/(float)img_h, img_c*8, img_c );
+    // row-major matrix with 3 columns: x, y, pixel_value
+    Mat m = mat_alloc(img_w*img_h, 3) ;
+    
+    for (size_t y=0; y < (size_t) img_h; ++y){
+        for (size_t x=0; x < (size_t) img_w; ++x){
+            size_t i = (y * img_w + x ) ;
+            MAT_AT(m, i , 0) = (float) x/(img_w -1) ;
+            MAT_AT(m, i , 1) = (float) y/(img_h -1) ;
+            MAT_AT(m, i , 2) = pixel_data[i]/255.f ;
+            printf("%3u ", pixel_data[i]);
+        }
+        printf("\n");
+    }
+    
+    mat_save(dataname, m);
+    printf("image pixels extracted as float matrix and saved as .mat file\n\
+            - input image file: %s\n\
+            - output file: %s\n", filename, dataname);
+    
+    return;
     int img_w, img_h, img_c;
     uint8_t * pixel_data = (uint8_t *) stbi_load(filename, &img_w, &img_h, &img_c, 0);
     printf("%s size %d x %d , %d bits\n", filename, img_w, img_h, img_c*8 );
@@ -535,7 +613,7 @@ Mat img_to_mat(const char * filename)
     }
     return m;
 }
-
+*
 void print_img(const char * filename)
 {
     int img_w, img_h, img_c;
@@ -594,6 +672,30 @@ void nn_rand(NN m, float min, float max)
     }
 }
 
+NN nn_init(Arch arch)
+{
+    NN m = nn_alloc(arch.items, arch.count);
+    nn_rand(m, 0.f, 0.25f);
+    return m;
+}
+
+
+
+NN_wG nn_g_init(Arch arch) 
+{
+    NN_wG nn_g;
+    nn_g.nn = nn_init(arch);
+    nn_g.g = nn_alloc(arch.items, arch.count);
+    return nn_g;
+}
+/*
+void nn_g_free(NN_wG * nn_g) 
+{
+    free(nn_g.nn);
+    free(nn_g.g);
+    return;
+}
+*/
 void nn_forward(NN nn)
 {
     for (size_t i=0; i < nn.count; ++i){

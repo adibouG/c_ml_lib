@@ -1,6 +1,16 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <float.h>
 #include "raylib.h"
+#include "raymath.h"
+#include <stdlib.h>
+#include <stdint.h>
+#include <assert.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #define ML_IMP
 #include "mllib.h"
@@ -22,7 +32,9 @@ typedef struct {
     void * items;
 } DArray;
 
-
+typedef struct {
+    NN nn;
+} Thread_params;
 
 typedef struct {
     size_t count;
@@ -45,7 +57,7 @@ if ((da)->count >= (da)->capacity) {                                            
         "da_append macro: dynamic array fail to realloc");                          \
 }                                                                                   \
 (da)->items[(da)->count++] = (item);                                                \
-}                                                                                   \
+}                                                                              \
 while (0)                                                                           \
 
 
@@ -60,80 +72,267 @@ const size_t TRAINING_MIN_ITER = 5 * 1000; // 5k iterations minimum
 const size_t TRAINING_MAX_ITER = 1000 * 1000; // 1M iterations maximum
 const float_t TRAINING_DEFAULT_DIFF_DELTA = 1e-1f;
 const float_t TRAINING_DEFAULT_LEARN_RATE = 1.f;
-const size_t UI_WIDGET_LAYOUT_BASE = {1, 3}; // 1 row and 3 cols : plot, metwork, data
-const size_t UI_WIDGET_LAYOUT_LIVE_IMG = {1, 2}; // 2 img side by side: // original and live preview
-const size_t UI_WIDGET_LAYOUT_LIVE_IMG_MERGE = {2, 3}; //row1 => in1: img1, coef rate modif, in2: img2 // row2 => out1: merged_img;
+const size_t * UI_WIDGET_LAYOUT_BASE = {1, 3}; // 1 row and 3 cols : plot, metwork, data
+const size_t * UI_WIDGET_LAYOUT_LIVE_IMG = {1, 2}; // 2 img side by side: // original and live preview
+const int * UI_WIDGET_LAYOUT_LIVE_IMG_MERGE = {2, 3}; //row1 => in1: img1, coef rate modif, in2: img2 // row2 => out1: merged_img;
 const size_t UI_WIDGET_PADDING = 5;
 const Color UI_BG_COLOR = GRAY; 
 const Color UI_FG_COLOR = WHITE;
 const Color UI_HOVER_COLOR = LIGHTGRAY;
-const Color COLOR_LOW_ACTIVITY = SKYBLUE;
-const Color COLOR_HIGH_ACTIVITY = GREEN;
+const Color COLOR_HIGH_NEGATIVE_ACTIVITY = RED;
+const Color COLOR_LOW_NEGATIVE_ACTIVITY = YELLOW;
+const Color COLOR_NEUTRAL_ACTIVITY = LIGHTGRAY; ;
+const Color COLOR_LOW_POSITIVE_ACTIVITY = SKYBLUE;
+const Color COLOR_HIGH_POSITIVE_ACTIVITY = GREEN;
+
+#define ORIGINAL_WIDTH  28
+#define ORIGINAL_HEIGHT 28
+#define ORIGINAL_SIZE 28*28*4
 
 #define RENDER_WIDTH 512
 #define RENDER_HEIGHT 512
-#define RENDER_FPS 60
-//#define RENDER_WITH_RAYLIB
-uint8_t pixels[RENDER_WIDTH * RENDER_HEIGHT]; // Array to store the pixel data
+#define RENDER_SIZE 512*512*4
+
+#define RENDER_FPS 60 
+/*
+* 512x512 pixels at 60 fps
+* 512 * 512 * 4 bytes = 1 MB per frame
+* 60 fps = 60 MB per second
+* 60 seconds = 3.6 GB per minute
+* 3.6 GB per minute = 216 GB per hour
+**/
+/*
+const size_t RENDER_FPS = 60; 
+const size_t ORIGINAL_WIDTH = 28;
+const size_t ORIGINAL_HEIGHT = 28;
+const size_t RENDER_WIDTH = 512;
+const size_t RENDER_HEIGHT = 512;
+*/
+/*
+size_t *pixels = NULL;
+
+int main() {
+    pixels = malloc(RENDER_WIDTH * RENDER_HEIGHT * sizeof(*pixels));
+    // ... use pixels ...
+    free(pixels);
+    return 0;
+}
+ */
+
+uint32_t  pixels_32b [(uint32_t ) RENDER_SIZE];
+uint32_t  original_pixels_32b [2][(uint32_t ) ORIGINAL_SIZE ]; // Array to store the pixel data
+
+uint32_t  pixels [(uint32_t) RENDER_SIZE ] ; // Array to store the pixel data
+uint8_t  original_pixels [2][(uint8_t) ORIGINAL_SIZE ]; // Array to store the pixel data
     
-const char upscale_screenshot_file[64] = "upscale_screenshot.png";
-const char upscale_video_file[64] = "upscale_video.mp4";
-const char ui_screenshot_file[64] = "ui_screenshot.png";
-const char ui_video_file[64] = "ui_video.mp4";
+const char * upscale_screenshot_file = "upscale_screenshot.png";
+const char * upscale_video_file = "upscale_video.mp4";
 
 
-void render_ui_screenshot(const char * file_name)
+pthread_t tid; 
+
+void render_frame(NN nn, float scroll)
 {
-    TakeScreenshot(file_name);
-    printf("Screenshot saved to %s\n", file_name);
-}
-
-
-void render_ui_video(const char * file_name, bool * record_frames, 
-    size_t epoch, size_t frame)
-{
-  
-    // Create a video writer
-    //VideoWriter writer = VideoWriterCreate(file_name, RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS);
-    while (record_frames) {
-        
-        /*
-        for (int i = 0; i < RENDER_FPS * 10; i++) { // 10 seconds of video
-        // Update the frame data
-        for (size_t y = 0; y < RENDER_HEIGHT; ++y) {
-            for (size_t x = 0; x < RENDER_WIDTH; ++x) {
-                pixels[y * RENDER_WIDTH + x] = (uint8_t)((x + y + frame) % 256);
-            }
-        }
-        // Write the frame to the video
-        //VideoWriterWriteFrame(writer, pixels);
-        frame++;
-        */
-    }
-    return;
-}
-
-
-void render_upscale_video(NN nn, const char * file_name) 
-{
-    return;
-}
-
-void render_upscale_screenshot(NN nn, const char * file_name)
-{
-
-    for (size_t y = 0; y < (size_t) RENDER_HEIGHT; ++y){
+    for (size_t y = 0; y < RENDER_HEIGHT; ++y){
         for (size_t x = 0; x < (size_t) RENDER_WIDTH; ++x){
             MAT_AT(NN_IN(nn), 0, 0) = (float) x / (RENDER_WIDTH - 1);
             MAT_AT(NN_IN(nn), 0, 1) = (float) y / (RENDER_HEIGHT - 1);
+            MAT_AT(NN_IN(nn), 0, 2) = scroll;
             nn_forward(nn);
-            uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
-            // Draw the pixel in the live preview image
-            Color color_pixel = CLITERAL(Color) { pixel, pixel, pixel, 255 };
-//            ImageDrawPixel(&img, x, y, color_pixel);
+            float active_pixel = MAT_AT(NN_OUT(nn), 0, 0);
+            if (active_pixel < 0) active_pixel = 0.0f;
+            if (active_pixel > 1) active_pixel = 1.0f;
+            uint32_t pixel_bright = (uint32_t) active_pixel * 255;
+            uint32_t pixel_value = pixel_bright << 24 | pixel_bright << 16 | 
+             pixel_bright << 8 | pixel_bright;
+            pixels[y * RENDER_WIDTH + x] = pixel_value;           
         }
     }
 }
+
+int render_upscale_video(NN nn) 
+{
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        perror("Pipe creation failed");
+        fprintf(stderr, "Failed to create pipe: %s\n", strerror(errno));
+        return 1;
+    }
+    printf("Pipe created successfully\n");
+
+    // 0 is read end, 1 is write end
+    // We can use these file descriptors to communicate with the child process
+    #define read_end 0 // Set the desired frames per second 
+    #define write_end 1 // Set the desired frames per second 
+
+    int wstatus = -9; // Variable to store the status of the child process
+    pid_t wait_status; 
+       
+    pid_t  child_pid = fork();
+    if (child_pid < 0) {
+        perror("Fork failed");
+        fprintf(stderr, "Failed to fork process: %s\n", strerror(errno));
+        return (1);
+    }
+    if (child_pid == 0) {
+        // Child process
+        printf("Child process... pid: %d\n", getpid());
+        close(pipefd[write_end]); // Close the write end of the pipe in the child process
+        printf("close pipe --- child write end\n");
+        if (dup2(pipefd[read_end], STDIN_FILENO) < 0) {
+            perror("dup2 failed");
+            fprintf(stderr, "Failed to redirect stdin to pipe: %s\n", strerror(errno));
+            _exit(1);   
+        }
+       
+        // Child process
+        char fps_str[8];
+        snprintf(fps_str, sizeof(fps_str), "%zu", RENDER_FPS); // Convert fps to string
+        char res_str[64];
+        snprintf(res_str, sizeof(res_str), "%zux%zu", RENDER_WIDTH, RENDER_HEIGHT);
+        char file_name_str[64];
+        snprintf(file_name_str, sizeof(file_name_str), "%s", upscale_video_file);
+    
+        int return_value = execlp("ffmpeg", 
+            "ffmpeg",
+            "-loglevel", "alert", // Set log level to debug
+            "-f", "rawvideo", // Input format is raw video
+            "-r", fps_str, // Set the frame rate(fps, // Set the frame rate to 60 fps
+            "-s", res_str, // Set the resolution(width) "x" STR_LITERAL_VALUE(height), // Set the size of the video
+            "-pix_fmt", "rgba", // Pixel format is RGBA
+            "-y", // Overwrite output file without asking
+            "-an",// Disable audio
+            //
+            "-i", "-",  // Input from stdin (pipe)
+            "-c:v", "libx264",
+            //
+            "-o", file_name_str, // Output file name
+            //...
+            NULL
+        );
+        if (return_value < 0) {
+            perror("execlp failed");
+            fprintf(stderr, "Failed to execute ffmpeg as child process: %s\n", strerror(errno));
+            close(pipefd[read_end]);
+            _exit(1); // Exit the child process with an error code
+        }
+        else {
+            printf("Child process...execlp returned successfully\n");
+            close(pipefd[read_end]);
+            _exit(0);
+        }
+    }
+    else {
+        // Parent process
+        printf("Parent process... pid: %d\n", getpid());
+        close(pipefd[read_end]); // Close the read end of the pipe in the parent process
+        printf("close pipe --- parent read end\n");
+
+        
+        ssize_t bytes_written = 0;
+        size_t duration = 10; // Duration in seconds for the video
+        size_t frame_count = duration * RENDER_FPS ;
+        printf("Parent process...writing to pipe for %zu seconds\n", duration);
+        for (size_t frame_i = 0 ; frame_i < frame_count; ++frame_i) {
+            render_frame(nn, (float) frame_i / frame_count);
+            ssize_t bits2write = RENDER_WIDTH * RENDER_HEIGHT * sizeof(*pixels);
+            write(pipefd[write_end], pixels, bits2write);
+            bytes_written += bits2write / 8;
+            printf("Parent process...added %zd bits to pipe, wrote %zd bytes to pipe\n",bits2write, bytes_written);
+        }
+        
+        close(pipefd[write_end]); // Close the write end of the pipe in the parent process
+        printf("close pipe --- parent write end\n");
+       
+        printf("Parent process...child pid: %d\n", child_pid);
+        wait_status = waitpid(child_pid, &wstatus, WUNTRACED | WCONTINUED ); // Wait for the child to finish;
+        if (wait_status < 0) {
+            perror("waitpid failed");
+            fprintf(stderr, "Failed to wait for child process: %s\n", strerror(errno));
+            return 1;
+        }
+        printf("Parent process...waitpid returned %d\n", wait_status);
+        
+        // This block is here if you want to handle the child process status in a loop
+        // For example, if you want to handle signals or check if the child is stopped or 
+        // continued, you can uncomment this block and use this loop.
+ 
+        do {
+            if (WIFEXITED(wstatus)) {
+                printf("Child process exited with status %d\n", WEXITSTATUS(wstatus));
+            } else if (WIFSIGNALED(wstatus)) {
+                printf("Child process terminated by signal %d\n", WTERMSIG(wstatus));
+            } else if (WIFSTOPPED(wstatus)) {
+                printf("Child process stopped by signal %d\n", WSTOPSIG(wstatus));
+            } else if (WIFCONTINUED(wstatus)) {
+                    printf("Child process continued\n");
+            }
+        } while (!WIFEXITED(wstatus) && !WIFSIGNALED(wstatus));
+        
+        printf("Parent process...child process finished with status %d\n", wstatus);
+        printf("video rendered --- child process finished\n");
+        printf("video rendered --- parent process finished\n"); 
+        return 0;
+    }
+}
+
+// Thread function
+void* video_thread_func(void * arg) {
+    if (arg == NULL) {
+        fprintf(stderr, "Error: Argument is NULL: %s\n", strerror(errno));
+        return NULL;
+    }
+    Thread_params * params = (Thread_params *) arg;
+    if (params == NULL || params->nn.count == 0) {
+        fprintf(stderr, "Error: nn is NULL: %s\n", strerror(errno));
+    } 
+    else if (render_upscale_video(params->nn) != 0) {
+        fprintf(stderr, "Error: Failed to render video: %s\n", strerror(errno));
+    }   
+    free(arg);
+    return NULL;
+}
+
+
+
+int8_t render_upscale_screenshot(NN nn, float scroll, const char * file_name)
+{
+
+    render_frame(nn, scroll);
+
+    if (!stbi_write_png(file_name, RENDER_WIDTH, RENDER_HEIGHT, 4, &pixels, RENDER_SIZE * sizeof(*pixels) ))
+    {   
+        fprintf(stderr, "Failed to save image : %s\n", strerror(errno));
+        printf("Failed to save image to %s\n", file_name);
+        return 1;
+    }
+
+    printf("Screenshot saved to %s\n", file_name);
+    return 0;
+}
+
+Color color_get_activation_color ( float v)
+{
+    if (v < -0.25f) return COLOR_LOW_NEGATIVE_ACTIVITY;
+    if (v < -0.75f) return COLOR_HIGH_NEGATIVE_ACTIVITY;
+    if (v < 0.000015f && v > -0.000015f) return COLOR_NEUTRAL_ACTIVITY;
+    if (v > 0.25f) return COLOR_LOW_POSITIVE_ACTIVITY;
+    if (v > 0.75f) return COLOR_HIGH_POSITIVE_ACTIVITY;
+    
+    return COLOR_NEUTRAL_ACTIVITY;
+}
+
+Color color_get_color (size_t r, size_t g, size_t b, size_t a)
+{
+    Color c;
+    c.r = (uint8_t) r;
+    c.g = (uint8_t) g;
+    c.b = (uint8_t) b;
+    c.a = (uint8_t) a;
+    return c;
+}
+
+
 
 void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h) 
 {
@@ -145,8 +344,8 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
     float NEURON_RADIUS = 10 + (ui_h/50) ;
     float CONX_WIDTH = 2 + ((ui_h)/100)/250;
 
-    Color activate = COLOR_HIGH_ACTIVITY;
-    Color deactivate = COLOR_LOW_ACTIVITY;
+    //Color activate = COLOR_HIGH_ACTIVITY;
+    //Color deactivate = COLOR_LOW_ACTIVITY;
     // TODO: 
     //  - extract element values for hovering displays
     //  - add dynamic color for neuron activity 
@@ -171,9 +370,16 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
                     // draw connection line between neurons
                     float weight_value = sigmf(MAT_AT(nn.ws[l], j, i));
                     float alpha = floorf(255.f * weight_value);
-                    activate.a = alpha;
+                    Color activate = (color_get_activation_color(alpha));
+                    activate.a  = alpha;
                     float thick = CONX_WIDTH + floorf(alpha/153);
-                    Color dynamic_color = ColorAlphaBlend(deactivate, activate, WHITE);
+                  
+                  
+                    Color dynamic_color = alpha < 0 ? 
+                        ColorAlphaBlend(activate, COLOR_HIGH_NEGATIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY) //ColorAlphaBlend(deactivate, activate, WHITE);activate 
+                        : ColorAlphaBlend(activate, COLOR_HIGH_POSITIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY); //ColorAlphaBlend(deactivate, activate, WHITE);
+
+            //        Color dynamic_color = ColorAlphaBlend(COLOR_HIGH_NEGATIVE_ACTIVITY, COLOR_HIGH_POSITIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY); //ColorAlphaBlend(deactivate, activate, WHITE);
                     Vector2 st = { cx1, cy1 };
                     Vector2 en = { cx2, cy2 };
                     DrawLineEx (st, en, thick, dynamic_color);
@@ -185,11 +391,16 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
 
                 float bias_value = sigmf(MAT_AT(nn.bs[l-1], 0, i));
                 float alpha = floorf(255.f * bias_value);
+                Color activate = (color_get_activation_color(alpha));
                 activate.a = alpha;
                 // size_t layer_neuron_nbr = nn.as[l-1].cols
                 // float layer_size_neuron_radius = (float) (nn_h/layer_neuron_nbr);
-                Color colr = ColorAlphaBlend(deactivate, activate, WHITE);
-                DrawCircle(cx1, cy1, NEURON_RADIUS, colr);
+                //Color colr = ColorAlphaBlend(deactivate, activate, WHITE);
+                Color dynamic_color = alpha < 0 ? 
+                    ColorAlphaBlend(activate, COLOR_HIGH_NEGATIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY) //ColorAlphaBlend(deactivate, activate, WHITE);activate 
+                    : ColorAlphaBlend(activate, COLOR_HIGH_POSITIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY); //ColorAlphaBlend(deactivate, activate, WHITE);
+
+                DrawCircle(cx1, cy1, NEURON_RADIUS, dynamic_color);
             }
             else  // input layer neurons
             {
@@ -199,13 +410,13 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
     }
 }
 
-void chart_min_max (Chart chart, float *min, float *max)
+void chart_min_max (Chart *chart, float *min, float *max)
 {
     *min = FLT_MAX ;
     *max = FLT_MIN ;
-    for (size_t i=0; i < chart.count; ++i) {
-        if (*max < chart.items[i]) *max = chart.items[i];
-        if (*min > chart.items[i]) *min = chart.items[i];
+    for (size_t i=0; i < chart->count; ++i) {
+        if (*max < chart->items[i]) *max = chart->items[i];
+        if (*min > chart->items[i]) *min = chart->items[i];
     }
 }
 
@@ -234,7 +445,9 @@ void cost_graph_render(Chart chart, int xpos, int ypos, int img_w, int img_h)
         DrawText("Not enough data to display", xpos + 5, ypos + 5, img_h*0.04, color_ref_y0);
         return;
     }
-   // chart_min_max (&chart, *min, *max); inlined to simplify and  avoid dereferencing
+    chart_min_max (&chart, &min, &max);
+    //  inlined to simplify and  avoid dereferencing
+    /*
     min = FLT_MAX ;
     max = FLT_MIN ;
     for (size_t i=0; i < chart.count; ++i) {
@@ -242,8 +455,9 @@ void cost_graph_render(Chart chart, int xpos, int ypos, int img_w, int img_h)
         if (min > chart.items[i]) min = chart.items[i];
     }
    //__chart_min_max: end 
+   */
     if (min > 0) min = 0;
-    //if (min > max) min = max;
+    if (min > max) min = max;
     if (n < 1000) n = 1000;   
     
     char buffer_text_value[64];
@@ -301,21 +515,24 @@ void cost_graph_render(Chart chart, int xpos, int ypos, int img_w, int img_h)
 }
 
 
-void ascii_print_ref_data(int img_w, int img_h, Mat to, bool hide_null)
-{
+void ascii_print_ref_data(int img_w, int img_h, bool hide_null)
+{   
     printf("*** 'ASCII styled': Original image pixel data: ***\n");
-    
-    for (size_t y = 0; y < (size_t) img_h; ++y){
-        for (size_t x = 0; x < (size_t) img_w; ++x){
-            size_t idx = y * img_w + x;
-            uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
+    for (size_t img_idx=0; img_idx < (size_t) ARRAY_LEN(original_pixels)/ARRAY_LEN(original_pixels[0]) ; ++img_idx) // for (array lengthsize_t y){ // int img_idx, 
+    {
+        printf("*** 'Original image %zu pixel data: ***\n", img_idx);
+        for (size_t y = 0; y < (size_t) img_h; ++y){
+            for (size_t x = 0; x < (size_t) img_w; ++x){
+                size_t idx = y * img_w + x;
+                uint8_t pixel = original_pixels[img_idx][idx] ;
             
-            (hide_null && pixel == 0) ?
-                printf("    ") :
-                printf("%3u ", pixel);
-        }
+                (hide_null && pixel == 0) ?
+                    printf("    ") : printf("%3u ", pixel);
+            }
+            printf("\n");
+        }      
         printf("\n");
-    }      
+    }
 }
 
 void ascii_print_nn_out_data(NN nn, int img_w, int img_h, bool hide_null)
@@ -326,6 +543,9 @@ void ascii_print_nn_out_data(NN nn, int img_w, int img_h, bool hide_null)
         for (size_t x=0; x < (size_t)img_w ; ++x){
             MAT_AT(NN_IN(nn), 0, 0) = (float) x / (img_w - 1);
             MAT_AT(NN_IN(nn), 0, 1) = (float) y / (img_h - 1);
+            // Set the third channel to 0.5 for grayscale
+            MAT_AT(NN_IN(nn), 0, 2) = 0.5f; // set the third channel to 0.5 for grayscale
+            // Forward pass through
             nn_forward(nn);
             uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
 
@@ -337,9 +557,7 @@ void ascii_print_nn_out_data(NN nn, int img_w, int img_h, bool hide_null)
     }
 }
 
-void live_preview_render(Image img, Texture2D tex,
-     NN nn, int img_w, int img_h, 
-     int pos_x, int pos_y, int graph_w, int graph_h)
+void live_preview_render(Image img, Texture2D tex, NN nn, int img_w, int img_h, int pos_x, int pos_y, int graph_w, int graph_h)
 {
     for (size_t y = 0; y < (size_t) img_h; ++y){
         for (size_t x = 0; x < (size_t) img_w; ++x){
@@ -399,13 +617,12 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
     //  we use the original image size for now, (ie: 28x28, as we can easily re-compute the size from the ti/to matrix rows count),
     //  ie: original_img_size_w = sqrt(ti.rows) , this will work for any image data as long as it's not too large and has a ratio 1:1,
     //  NEXT TODO: otherwise we use a default preview image size_t, that is a original_img_size_w = sqrt(ti.rows) ;
-    int original_img_size = sqrt(ti.rows) ; // sqrt(ti.rows) == sqrt(to.rows) 
-    size_t preview_width = original_img_size; //UI_WINDOW_WIDTH / num_of_widgets;
-    size_t preview_height = original_img_size; //  UI_WINDOW_HEIGHT / num_of_widgets; // preview_width, preview_height
+    uint32_t original_img_size = (uint32_t) sqrt(ti.rows/2) ; // sqrt(ti.rows) == sqrt(to.rows) 
+    size_t preview_width = (size_t) original_img_size; //UI_WINDOW_WIDTH / num_of_widgets;
+    size_t preview_height = (size_t) original_img_size; //  UI_WINDOW_HEIGHT / num_of_widgets; // preview_width, preview_height
+    
     Image view_image_1 = GenImageColor(preview_width, preview_height, BLACK);
-    printf("Preview image size: %zu x %zu\n", max_epoch, max_epoch);
     Texture2D view_texture_1 = LoadTextureFromImage(view_image_1);
-    printf("Preview image size: %zu x %zu\n", max_epoch, max_epoch);
     // Set the texture filter to bilinear for better quality
     // Set the texture to the live preview image
     //SetTextureWrap(view_texture_1, TEXTURE_WRAP_CLAMP); 
@@ -417,14 +634,29 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
     SetTextureFilter(view_texture_2, TEXTURE_FILTER_BILINEAR);
     SetTextureWrap(view_texture_2, TEXTURE_WRAP_CLAMP); 
     */ 
+    
+    Image view_image_3 = GenImageColor(preview_width, preview_height, BLACK);
+    Texture2D view_texture_3 = LoadTextureFromImage(view_image_3);
+
+    
+    Image view_image_4 = GenImageColor(preview_width, preview_height, BLACK);
+    Texture2D view_texture_4 = LoadTextureFromImage(view_image_4);
+
     for (size_t y=0; y <  original_img_size; ++y){
         for (size_t x=0; x <  original_img_size; ++x){
-            size_t idx = y * original_img_size + x;
-            uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
-            ImageDrawPixel(&view_image_2, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
+            size_t idx1 = y * original_img_size + x;
+            size_t idx2 = original_img_size * original_img_size + y * original_img_size + x;
+            original_pixels[0][idx1] = ( uint32_t ) MAT_AT(to, idx1, 0)*255.f; // store original pixel data for later use
+            original_pixels[1][idx1] = ( uint32_t ) (MAT_AT(to, idx2, 0))*255.f; // store original pixel data for later use
+            uint8_t pixel2 = MAT_AT(to, idx1, 0)*255.f;
+            uint8_t pixel4 = MAT_AT(to, idx2, 0)*255.f;
+            ImageDrawPixel(&view_image_2, x, y, CLITERAL(Color) { pixel2, pixel2, pixel2, 255 });
+            ImageDrawPixel(&view_image_4, x, y, CLITERAL(Color) { pixel4, pixel4, pixel4, 255 });
         }
     }
-               
+    Image view_image_5 = GenImageColor(preview_width, preview_height, BLACK);
+    Texture2D view_texture_5 = LoadTextureFromImage(view_image_5);
+    
     // TODO: add dynamic window layout setup/system
     size_t num_of_widgets = 2; // 2 widget as default: neuron network and cost trace
     
@@ -436,16 +668,16 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
     size_t epoch = 0;
     size_t iteration = 0;
     size_t number_of_samples = ti.rows; // number of samples in the training data
-    size_t batch_count = 28; // default batch count
-    size_t batch_size = number_of_samples / batch_count; // number_of_samples / batch_count; // default batch size
-    if (number_of_samples % batch_count != 0) {
-        batch_size = (number_of_samples + (batch_count - 1)) / batch_count ; // 1000 samples per batch
+    size_t batch_count = number_of_samples / 8 ;// default batch count
+    size_t batch_size = number_of_samples / batch_count; // default batch size
+    if (number_of_samples % batch_size != 0) {
+        batch_count = (number_of_samples + (batch_size - 1)) / batch_size ; // 1000 samples per batch
     } 
     //size_t iterations_per_frame = 60;
     //size_t epochs_per_frame = 60;
     bool stop_training = true;
-
-
+    float scroll = 0.5f;
+    bool is_scrolling = false;
     // GUI Render loop
     // The loop will run until the user stops it or the maximum number of iterations is reached
     while (!WindowShouldClose())
@@ -469,11 +701,35 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
             }
             // S: render screenshot
             else if (IsKeyPressed(KEY_S)) {
-         //      render_upscale_screenshot(nn, upscale_screenshot_file);
-            }
-            // S: render screenshot
+               if (render_upscale_screenshot(nn, scroll, upscale_screenshot_file) > 0) 
+               {
+                   printf("Failed to save image to %s\n", upscale_screenshot_file);
+               }
+               else
+               {
+                   printf("Screenshot saved to %s\n", upscale_screenshot_file);
+               }
+             }
+            // V: render video
             else if (IsKeyPressed(KEY_V)) {
-          //      render_upscale_video(nn, upscale_video_file);
+                
+    // Allocate and fill params
+    Thread_params params = {0};
+    params.nn = nn;
+    Thread_params * params_ptr = (Thread_params *) malloc(sizeof(params));
+    *params_ptr = params;
+    
+    if (params_ptr == NULL) {
+        fprintf(stderr, "Failed to allocate memory for thread parameters\n");
+        // or handle error appropriately
+    }
+    //params_ptr->nn = nn; 
+    //params_ptr = &params;
+    
+    pthread_create(&tid, NULL, video_thread_func, params_ptr); // video_thread_func, params);
+    pthread_join(tid, NULL);
+pthread_detach(tid); // Optional: auto-cleanup thread resources
+               // render_upscale_video(nn, upscale_video_file);
             }
             // SPACE: start/pause training
             else if (IsKeyPressed(KEY_SPACE)) { stop_training = !stop_training; }
@@ -625,21 +881,79 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
                     for (size_t x=0; x <  original_img_size; ++x){
                         MAT_AT(NN_IN(nn), 0, 0) = (float) x / (original_img_size - 1);
                         MAT_AT(NN_IN(nn), 0, 1) = (float) y / (original_img_size - 1);
+                        MAT_AT(NN_IN(nn), 0, 2) = 0.0f; // set the third channel to 0.5 for grayscale
                         nn_forward(nn);
                         uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
-                        //img_out_pixels[y * img_out_w + x] = pixel;
+                     
                         ImageDrawPixel(&view_image_1, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
                     }
                 }
+
+                for (size_t y=0; y <  original_img_size; ++y){
+                    for (size_t x=0; x <  original_img_size; ++x){
+                        MAT_AT(NN_IN(nn), 0, 0) = (float) x / (original_img_size - 1);
+                        MAT_AT(NN_IN(nn), 0, 1) = (float) y / (original_img_size - 1);
+                        MAT_AT(NN_IN(nn), 0, 2) = 1.0f; // set the third channel to 0.5 for grayscale
+                        nn_forward(nn);
+                        uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+                     
+                        ImageDrawPixel(&view_image_3, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
+                    }
+                }
+                
+
+
+                for (size_t y=0; y <  original_img_size; ++y){
+                    for (size_t x=0; x <  original_img_size; ++x){
+                        MAT_AT(NN_IN(nn), 0, 0) = (float) x / (original_img_size - 1);
+                        MAT_AT(NN_IN(nn), 0, 1) = (float) y / (original_img_size - 1);
+                        MAT_AT(NN_IN(nn), 0, 2) = scroll; // set the third channel to 0.5 for grayscale
+                        nn_forward(nn);
+                        uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;     
+                        ImageDrawPixel(&view_image_5, x, y, CLITERAL(Color) { pixel, pixel, pixel, 255 });
+                    }
+                }
+
                 // Draw the texture to the screen
                 // Render the preview images: original and NN output
                 int wid_graph_w = b_graph_w / 4; ///3;  // reduce the height of the cost graph
                 int wid_graph_h =  b_graph_h / 4; ///3;  // reduce the height of the cost graph
                 int wid_graph_pos_y = ui_h/2 - wid_graph_h/2; // h2 - graph_h/2;
                 int wid_graph_pos_x = window_vpad +  b_graph_w + wid_graph_w; // xpos;
-                int scale = 5; // scale factor for the preview images
+                int scale = 5; // wid_graph_w / original_img_size; // scale factor for the preview images
                 
         
+                {
+                    float pad = wid_graph_h*0.05;
+                    Vector2 size = { 3*wid_graph_w, wid_graph_h*0.075 };
+                    Vector2 pos = { wid_graph_pos_x + 4* pad , wid_graph_pos_y + wid_graph_h + 6* pad  };
+                    DrawRectangleV(pos, size, UI_FG_COLOR);
+                    
+                    float scroll_button =  wid_graph_h*0.1;
+                    Vector2 scroll_pos = { pos.x + size.x * scroll, pos.y + size.y/2  };
+                    DrawCircleV(scroll_pos, scroll_button, RED);
+
+                    if (is_scrolling) {
+                        // Update the scroll value based on mouse position
+                         
+                        float scroll_X = GetMousePosition().x ; 
+                        if ( scroll_X < pos.x) scroll_X = pos.x;
+                        if ( scroll_X > pos.x + size.x) scroll_X =  pos.x + size.x;
+                        scroll = (scroll_X - pos.x) / size.x; 
+                    }
+
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        if (Vector2Distance(GetMousePosition(), scroll_pos) <= scroll_button){
+                            is_scrolling = true; // Start scrolling
+                        }
+                    } 
+                    
+                    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                        is_scrolling = false; // Stop scrolling
+                    }
+                     // padding for the preview images
+                }
+
              //   graph_pos_y = graph_pos_y + graph_h; //h2 - graph_h/2;
                // graph_pos_x = window_vpad; // xpos;
                 //graph_h = graph_h / 3; // graph_h + 2*widget_pad; // preview_width;
@@ -658,7 +972,21 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
           
                 UpdateTexture(view_texture_2, view_image_2.data);
             // Draw the texture to the screen
-                DrawTextureEx(view_texture_2, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y - wid_graph_h }, 0, scale, color_white);
+                DrawTextureEx(view_texture_2, CLITERAL(Vector2) { wid_graph_pos_x, wid_graph_pos_y - wid_graph_h - original_img_size }, 0, scale, color_white);
+       
+
+                // Render the third preview image
+                UpdateTexture(view_texture_3, view_image_3.data);
+                // Draw the texture to the screen
+                DrawTextureEx(view_texture_3, CLITERAL(Vector2) { wid_graph_pos_x + wid_graph_w + 2*original_img_size , wid_graph_pos_y  }, 0, scale, color_white);
+       
+                UpdateTexture(view_texture_4, view_image_4.data);
+                // Draw the texture to the screen
+                DrawTextureEx(view_texture_4, CLITERAL(Vector2) { wid_graph_pos_x + wid_graph_w + 2*original_img_size, wid_graph_pos_y - wid_graph_h- original_img_size  }, 0, scale, color_white);
+       
+                UpdateTexture(view_texture_5, view_image_5.data);
+                // Draw the texture to the screen
+                DrawTextureEx(view_texture_5, CLITERAL(Vector2) { wid_graph_pos_x + wid_graph_w/2 + original_img_size, wid_graph_pos_y + wid_graph_h + 3*original_img_size  }, 0, scale, color_white);
        
             }
             {
@@ -676,7 +1004,7 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
                 DrawText(buffer, header_x + ui_h*0.02, header_y + ui_h*0.02, ui_h*0.04, color_white);
             }
              if (epoch == 0 || stop_training) {
-                DrawText("Press SPACE to train...", 150, 150, ui_h*0.04, color_white); //     
+                DrawText("Press SPACE to train...", 150 * ui_h*0.04, 150 * ui_h*0.0, ui_h*0.04, color_white); //     
             }
         }
         EndDrawing();
@@ -700,6 +1028,7 @@ int main(int argc, char * argv[])
     char * data_file_name = argv[2];
     
     char * out_rescaled_file_name = "upscaled.out.png";
+
     if (argc == 4) {
         out_rescaled_file_name = argv[3];
     }
@@ -730,10 +1059,9 @@ int main(int argc, char * argv[])
         file_content = sv_trim_left(file_content);
         printf("%zu\n", arch_data);
     }
-
     // Load the training data from the specified data file
     Mat t = mat_load(data_file_name);
-
+    
     ML_ASSERT(arch.count > 1);
     ML_ASSERT(t.rows > 0 && t.cols > 0);
     
@@ -765,7 +1093,7 @@ int main(int argc, char * argv[])
     // This is used to update the weights and biases during training
     NN g = nn_alloc(arch.items, arch.count);
     // Initialize the neural network with random weights and biases
-    nn_rand(nn, -1, 1);
+    nn_rand(nn, 0.f, 0.25f); //nn_rand(nn, -0.5f, 0.5f);
     
     // TODO: make the title dynamic
     char * title = "ML_LIB.C -- ML_Viewer -- NN Training GUI";
@@ -788,30 +1116,32 @@ int main(int argc, char * argv[])
 
     nn = display_training_gui(nn, g, ti, to, learn_rate, diff_delta, EPOCHS, title);
     
-    size_t original_img_size_h = sqrt(t.rows) ;
-    size_t original_img_size_w = original_img_size_h;
+    int original_img_size_h = (int) sqrt(t.rows/2) ; // t.rows/2 == original_img_size_h * original_img_size_w
+    int original_img_size_w = original_img_size_h;
     //TODO: HANDLE ASPECT RATIO for non-square images
     // TO DO: handle non-square images WITH ASPECT RATIO FOR UPSCALING
     
-    if (original_img_size_w * original_img_size_h != t.rows) {
+    if (original_img_size_w * original_img_size_h * 2 != (int)  t.rows) {
         fprintf(stderr, "Ratio error: not supported, image size is not square: %zu x %zu\n", original_img_size_w, original_img_size_h);
         return 1;
     }
     
-    ascii_print_ref_data(original_img_size_w, original_img_size_h, to, false);
+    ascii_print_ref_data(original_img_size_w, original_img_size_h,  false);
     ascii_print_nn_out_data(nn, original_img_size_w, original_img_size_h, false);
     
     size_t img_out_w = (size_t) out_rescaled_img_size_w;
     size_t img_out_h = (size_t) out_rescaled_img_size_h;
     
     //uint8_t * img_out_pixels = (uint8_t *) malloc(img_out_h * img_out_w * sizeof(uint8_t));
-    uint8_t * img_out_pixels = malloc(img_out_h * img_out_w * sizeof(*img_out_pixels));
+    uint32_t * img_out_pixels = malloc(img_out_h * img_out_w * sizeof(*img_out_pixels));
     assert(img_out_pixels != NULL);
+
 
     for (size_t y=0; y <  img_out_h; ++y){
         for (size_t x=0; x <  img_out_w; ++x){
             MAT_AT(NN_IN(nn), 0, 0) = (float) x / (img_out_w - 1);
             MAT_AT(NN_IN(nn), 0, 1) = (float) y / (img_out_h - 1);
+            MAT_AT(NN_IN(nn), 0, 2) = 0.5f; // set the third channel to 0.5 for grayscale
             nn_forward(nn);
             uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
             img_out_pixels[y * img_out_w + x] = pixel;
