@@ -61,6 +61,36 @@ void mat_activate_fn(Mat m, Activation f);
 #define MAT_AT(m, r, c) (m).es[(r)*(m).stride + (c)]
 
 
+typedef struct { 
+    float r, g, b, a; 
+} PixelRGBA;
+
+int32_t pixel_rgba_to_int(PixelRGBA p)
+{
+    return ((int32_t)(p.r * 255) << 24) | ((int32_t)(p.g * 255) << 16) |
+           ((int32_t)(p.b * 255) << 8) | (int32_t)(p.a * 255);
+} 
+
+PixelRGBA pixel_int_to_rgba(int64_t p)
+{
+     (PixelRGBA){
+        .r = ((p >> 24) & 0xFF) / 255.f,
+        .g = ((p >> 16) & 0xFF) / 255.f,
+        .b = ((p >> 8) & 0xFF) / 255.f,
+        .a = (p & 0xFF) / 255.f,
+    };
+}
+
+#define PRINT_AS_HEX(p) \
+    printf("0x%08x\n", p)
+
+typedef struct {
+    size_t width;
+    size_t height;
+    PixelRGBA *data;
+} ImageRGBA;
+
+
 
 typedef struct {
     Mat * mat;

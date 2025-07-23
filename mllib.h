@@ -100,13 +100,18 @@ typedef struct {
     float r, g, b, a; 
 } PixelRGBA;
 
-int32_t pixel_rgba_to_int(PixelRGBA p)
-{
+int32_t pixel_rgba_to_int32(PixelRGBA p)
+{   
+    // Convert a PixelRGBA to a 32-bit integer in the format ARGB
+    // where each channel is in the range [0, 255].
+    // The alpha channel is in the highest byte, followed by red, green, and blue
+    // Example: PixelRGBA(1.0, 0.5, 0.0, 1.0) becomes 0xFF7F00FF
+    
     return ((uint32_t) (p.r * 255) << 24) | ((uint32_t)(p.g * 255) << 16) |
            ((uint32_t)(p.b * 255) << 8) | (uint32_t)(p.a * 255);
 } 
 
-PixelRGBA pixel_int_to_rgba(uint32_t p)
+PixelRGBA pixel_int32_to_rgba(uint32_t p)
 {
     return (PixelRGBA){
         .r = ((p >> 24) & 0xFF) / 255.f,
@@ -465,7 +470,7 @@ int mat_save(const char * filename, Mat m)
         fprintf(stderr, "Could not open file %s\n", filename);
         return 1;
     }
-    fwrite(magic, strlen(magic),    1, data_out);
+    fwrite(magic,   strlen(magic),    1, data_out);
     fwrite(&m.rows, sizeof(m.rows),  1, data_out);
     fwrite(&m.cols, sizeof(m.cols),  1, data_out);
 

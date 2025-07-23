@@ -32,8 +32,23 @@ typedef struct {
     void * items;
 } DArray;
 
+#define handle_error_en(en, msg) \
+    do { errno = en; perror(msg); exit(EXIT_FAILURE); } while (0)
+
+#define handle_error(msg) \
+    do { perror(msg); exit(EXIT_FAILURE); } while (0)
+
+typedef struct  {    /* Used as argument to thread_start() */
+    pthread_t thread_id;        /* ID returned by pthread_create() */
+    int       thread_num;       /* Application-defined thread # */
+    char     *argv_string;      /* From command-line argument */
+} Thread_args;
+
 typedef struct {
     NN nn;
+    int img_w;
+    int img_h;
+    char * img_filename;
 } Thread_params;
 
 typedef struct {
@@ -60,6 +75,8 @@ if ((da)->count >= (da)->capacity) {                                            
 }                                                                              \
 while (0)                                                                           \
 
+#define read_end 0 // Set the desired frames per second 
+#define write_end 1 // Set the desired frames per second 
 
 const size_t UI_FPS = 60;
 const size_t UI_WINDOW_FACTOR = 80;
@@ -82,8 +99,8 @@ const Color UI_HOVER_COLOR = LIGHTGRAY;
 const Color COLOR_HIGH_NEGATIVE_ACTIVITY = RED;
 const Color COLOR_LOW_NEGATIVE_ACTIVITY = YELLOW;
 const Color COLOR_NEUTRAL_ACTIVITY = LIGHTGRAY; ;
-const Color COLOR_LOW_POSITIVE_ACTIVITY = SKYBLUE;
-const Color COLOR_HIGH_POSITIVE_ACTIVITY = GREEN;
+const Color COLOR_LOW_ACTIVITY = SKYBLUE;
+const Color COLOR_HIGH_ACTIVITY = GREEN;
 
 #define ORIGINAL_WIDTH  28
 #define ORIGINAL_HEIGHT 28
@@ -93,7 +110,9 @@ const Color COLOR_HIGH_POSITIVE_ACTIVITY = GREEN;
 #define RENDER_HEIGHT 512
 #define RENDER_SIZE 512*512*4
 
-#define RENDER_FPS 60 
+#define RENDER_FPS 40 
+
+#define RENDER_TIME 10 // 10 seconds of video
 /*
 * 512x512 pixels at 60 fps
 * 512 * 512 * 4 bytes = 1 MB per frame
@@ -119,39 +138,55 @@ int main() {
 }
  */
 
-uint32_t  pixels_32b [(uint32_t ) RENDER_SIZE];
-uint32_t  original_pixels_32b [2][(uint32_t ) ORIGINAL_SIZE ]; // Array to store the pixel data
+uint32_t    pixels_32b [(size_t) RENDER_SIZE];
+uint32_t  original_pixels_32b [2][(size_t) ORIGINAL_SIZE ]; // Array to store the pixel data
 
-uint32_t  pixels [(uint32_t) RENDER_SIZE ] ; // Array to store the pixel data
-uint8_t  original_pixels [2][(uint8_t) ORIGINAL_SIZE ]; // Array to store the pixel data
+size_t  pixels [(size_t) RENDER_SIZE ] ; // Array to store the pixel data
+size_t  original_pixels [2][(size_t) ORIGINAL_SIZE ]; // Array to store the pixel data
     
-const char * upscale_screenshot_file = "upscale_screenshot.png";
-const char * upscale_video_file = "upscale_video.mp4";
+char  * upscale_screenshot_file = "upscale_screenshot.png";
+char  * upscale_video_file = "upscale_video.mp4";
 
 
-pthread_t tid; 
 
 void render_frame(NN nn, float scroll)
 {
-    for (size_t y = 0; y < RENDER_HEIGHT; ++y){
+
+    for (size_t y = 0; y < (size_t) RENDER_HEIGHT; ++y){
         for (size_t x = 0; x < (size_t) RENDER_WIDTH; ++x){
             MAT_AT(NN_IN(nn), 0, 0) = (float) x / (RENDER_WIDTH - 1);
             MAT_AT(NN_IN(nn), 0, 1) = (float) y / (RENDER_HEIGHT - 1);
             MAT_AT(NN_IN(nn), 0, 2) = scroll;
             nn_forward(nn);
             float active_pixel = MAT_AT(NN_OUT(nn), 0, 0);
-            if (active_pixel < 0) active_pixel = 0.0f;
-            if (active_pixel > 1) active_pixel = 1.0f;
-            uint32_t pixel_bright = (uint32_t) active_pixel * 255;
-            uint32_t pixel_value = pixel_bright << 24 | pixel_bright << 16 | 
-             pixel_bright << 8 | pixel_bright;
+            
+            float active_pixelr = MAT_AT(NN_OUT(nn), 0, 1);
+            float active_pixelg = MAT_AT(NN_OUT(nn), 0, 2);
+            float active_pixelb = MAT_AT(NN_OUT(nn), 0, 3);
+            if (active_pixel < 0) active_pixel = 0.0f; //otherwise there are problem with some activation functions
+            else if (active_pixel > 1) active_pixel = 1.0f;
+            uint8_t pixel_bright = (uint8_t) active_pixel * 255;
+            uint8_t pixel_brightr = (uint8_t) active_pixelr * 255;
+            uint8_t pixel_brightg = (uint8_t) active_pixelg * 255;
+            uint8_t pixel_brightb = (uint8_t) active_pixelb * 255;
+            uint32_t pixel_value = ((uint32_t) pixel_brightr << 24 | 
+                                    (uint32_t) pixel_brightg << 16 | 
+                                    (uint32_t) pixel_brightb << 8 |
+                                    (uint32_t) pixel_bright);
             pixels[y * RENDER_WIDTH + x] = pixel_value;           
         }
     }
 }
 
-int render_upscale_video(NN nn) 
+int render_upscale_video(NN nn, const char * upscale_video_filename, \
+    size_t upscale_width, size_t upscale_height, size_t fps, size_t time)
 {
+    // Create a pipe to communicate with the child process
+    // The child process will run ffmpeg and read from the pipe
+    // The parent process will write the rendered frames to the pipe
+    // This allows us to render frames in real-time 
+    // and send them to ffmpeg for encoding
+    printf("Creating pipe for ffmpeg...\n");
     int pipefd[2];
     if (pipe(pipefd) < 0) {
         perror("Pipe creation failed");
@@ -162,8 +197,6 @@ int render_upscale_video(NN nn)
 
     // 0 is read end, 1 is write end
     // We can use these file descriptors to communicate with the child process
-    #define read_end 0 // Set the desired frames per second 
-    #define write_end 1 // Set the desired frames per second 
 
     int wstatus = -9; // Variable to store the status of the child process
     pid_t wait_status; 
@@ -187,15 +220,15 @@ int render_upscale_video(NN nn)
        
         // Child process
         char fps_str[8];
-        snprintf(fps_str, sizeof(fps_str), "%zu", RENDER_FPS); // Convert fps to string
+        snprintf(fps_str, sizeof(fps_str), "%zu", fps); // Convert fps to string
         char res_str[64];
-        snprintf(res_str, sizeof(res_str), "%zux%zu", RENDER_WIDTH, RENDER_HEIGHT);
+        snprintf(res_str, sizeof(res_str), "%zux%zu", upscale_width, upscale_height); // Convert resolution to string
         char file_name_str[64];
-        snprintf(file_name_str, sizeof(file_name_str), "%s", upscale_video_file);
-    
+        snprintf(file_name_str, sizeof(file_name_str), "%s", upscale_video_filename);
+        
         int return_value = execlp("ffmpeg", 
             "ffmpeg",
-            "-loglevel", "alert", // Set log level to debug
+            "-loglevel", "debug", // Set log level to debug
             "-f", "rawvideo", // Input format is raw video
             "-r", fps_str, // Set the frame rate(fps, // Set the frame rate to 60 fps
             "-s", res_str, // Set the resolution(width) "x" STR_LITERAL_VALUE(height), // Set the size of the video
@@ -227,17 +260,16 @@ int render_upscale_video(NN nn)
         printf("Parent process... pid: %d\n", getpid());
         close(pipefd[read_end]); // Close the read end of the pipe in the parent process
         printf("close pipe --- parent read end\n");
-
         
         ssize_t bytes_written = 0;
-        size_t duration = 10; // Duration in seconds for the video
-        size_t frame_count = duration * RENDER_FPS ;
+        size_t duration = length; // Duration in seconds for the video
+        size_t frame_count = duration * fps; ;
         printf("Parent process...writing to pipe for %zu seconds\n", duration);
         for (size_t frame_i = 0 ; frame_i < frame_count; ++frame_i) {
             render_frame(nn, (float) frame_i / frame_count);
-            ssize_t bits2write = RENDER_WIDTH * RENDER_HEIGHT * sizeof(*pixels);
+            ssize_t bits2write = upscale_width * upscale_width * sizeof(*pixels);
             write(pipefd[write_end], pixels, bits2write);
-            bytes_written += bits2write / 8;
+            bytes_written += bits2write ;
             printf("Parent process...added %zd bits to pipe, wrote %zd bytes to pipe\n",bits2write, bytes_written);
         }
         
@@ -277,16 +309,18 @@ int render_upscale_video(NN nn)
 }
 
 // Thread function
-void* video_thread_func(void * arg) {
+void* video_thread_func(void * arg, void * user_data) {
     if (arg == NULL) {
         fprintf(stderr, "Error: Argument is NULL: %s\n", strerror(errno));
         return NULL;
     }
-    Thread_params * params = (Thread_params *) arg;
+    Thread_params * params = (Thread_params *) user_data;
+    Thread_args * thread_arg =  (Thread_args *) arg;
     if (params == NULL || params->nn.count == 0) {
         fprintf(stderr, "Error: nn is NULL: %s\n", strerror(errno));
     } 
-    else if (render_upscale_video(params->nn) != 0) {
+    else if (render_upscale_video(params->nn, params->file_name , params->width,\
+                                params->height, params->fps, params->length) != 0) {
         fprintf(stderr, "Error: Failed to render video: %s\n", strerror(errno));
     }   
     free(arg);
@@ -300,7 +334,7 @@ int8_t render_upscale_screenshot(NN nn, float scroll, const char * file_name)
 
     render_frame(nn, scroll);
 
-    if (!stbi_write_png(file_name, RENDER_WIDTH, RENDER_HEIGHT, 4, &pixels, RENDER_SIZE * sizeof(*pixels) ))
+    if (!stbi_write_png(file_name, RENDER_WIDTH, RENDER_HEIGHT, 4, pixels, RENDER_SIZE * sizeof(*pixels) ))
     {   
         fprintf(stderr, "Failed to save image : %s\n", strerror(errno));
         printf("Failed to save image to %s\n", file_name);
@@ -310,29 +344,6 @@ int8_t render_upscale_screenshot(NN nn, float scroll, const char * file_name)
     printf("Screenshot saved to %s\n", file_name);
     return 0;
 }
-
-Color color_get_activation_color ( float v)
-{
-    if (v < -0.25f) return COLOR_LOW_NEGATIVE_ACTIVITY;
-    if (v < -0.75f) return COLOR_HIGH_NEGATIVE_ACTIVITY;
-    if (v < 0.000015f && v > -0.000015f) return COLOR_NEUTRAL_ACTIVITY;
-    if (v > 0.25f) return COLOR_LOW_POSITIVE_ACTIVITY;
-    if (v > 0.75f) return COLOR_HIGH_POSITIVE_ACTIVITY;
-    
-    return COLOR_NEUTRAL_ACTIVITY;
-}
-
-Color color_get_color (size_t r, size_t g, size_t b, size_t a)
-{
-    Color c;
-    c.r = (uint8_t) r;
-    c.g = (uint8_t) g;
-    c.b = (uint8_t) b;
-    c.a = (uint8_t) a;
-    return c;
-}
-
-
 
 void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h) 
 {
@@ -344,8 +355,8 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
     float NEURON_RADIUS = 10 + (ui_h/50) ;
     float CONX_WIDTH = 2 + ((ui_h)/100)/250;
 
-    //Color activate = COLOR_HIGH_ACTIVITY;
-    //Color deactivate = COLOR_LOW_ACTIVITY;
+    Color activate = COLOR_HIGH_ACTIVITY;
+    Color deactivate = COLOR_LOW_ACTIVITY;
     // TODO: 
     //  - extract element values for hovering displays
     //  - add dynamic color for neuron activity 
@@ -370,16 +381,9 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
                     // draw connection line between neurons
                     float weight_value = sigmf(MAT_AT(nn.ws[l], j, i));
                     float alpha = floorf(255.f * weight_value);
-                    Color activate = (color_get_activation_color(alpha));
-                    activate.a  = alpha;
+                    activate.a = alpha;
                     float thick = CONX_WIDTH + floorf(alpha/153);
-                  
-                  
-                    Color dynamic_color = alpha < 0 ? 
-                        ColorAlphaBlend(activate, COLOR_HIGH_NEGATIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY) //ColorAlphaBlend(deactivate, activate, WHITE);activate 
-                        : ColorAlphaBlend(activate, COLOR_HIGH_POSITIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY); //ColorAlphaBlend(deactivate, activate, WHITE);
-
-            //        Color dynamic_color = ColorAlphaBlend(COLOR_HIGH_NEGATIVE_ACTIVITY, COLOR_HIGH_POSITIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY); //ColorAlphaBlend(deactivate, activate, WHITE);
+                    Color dynamic_color = ColorAlphaBlend(deactivate, activate, WHITE);
                     Vector2 st = { cx1, cy1 };
                     Vector2 en = { cx2, cy2 };
                     DrawLineEx (st, en, thick, dynamic_color);
@@ -391,16 +395,11 @@ void nn_render(NN nn, int pos_x, int pos_y, int ui_w, int ui_h)
 
                 float bias_value = sigmf(MAT_AT(nn.bs[l-1], 0, i));
                 float alpha = floorf(255.f * bias_value);
-                Color activate = (color_get_activation_color(alpha));
                 activate.a = alpha;
                 // size_t layer_neuron_nbr = nn.as[l-1].cols
                 // float layer_size_neuron_radius = (float) (nn_h/layer_neuron_nbr);
-                //Color colr = ColorAlphaBlend(deactivate, activate, WHITE);
-                Color dynamic_color = alpha < 0 ? 
-                    ColorAlphaBlend(activate, COLOR_HIGH_NEGATIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY) //ColorAlphaBlend(deactivate, activate, WHITE);activate 
-                    : ColorAlphaBlend(activate, COLOR_HIGH_POSITIVE_ACTIVITY, COLOR_NEUTRAL_ACTIVITY); //ColorAlphaBlend(deactivate, activate, WHITE);
-
-                DrawCircle(cx1, cy1, NEURON_RADIUS, dynamic_color);
+                Color colr = ColorAlphaBlend(deactivate, activate, WHITE);
+                DrawCircle(cx1, cy1, NEURON_RADIUS, colr);
             }
             else  // input layer neurons
             {
@@ -524,8 +523,9 @@ void ascii_print_ref_data(int img_w, int img_h, bool hide_null)
         for (size_t y = 0; y < (size_t) img_h; ++y){
             for (size_t x = 0; x < (size_t) img_w; ++x){
                 size_t idx = y * img_w + x;
-                uint8_t pixel = original_pixels[img_idx][idx] ;
-            
+                
+                uint32_t pixel =  original_pixels[img_idx][idx] ;
+                
                 (hide_null && pixel == 0) ?
                     printf("    ") : printf("%3u ", pixel);
             }
@@ -557,16 +557,21 @@ void ascii_print_nn_out_data(NN nn, int img_w, int img_h, bool hide_null)
     }
 }
 
-void live_preview_render(Image img, Texture2D tex, NN nn, int img_w, int img_h, int pos_x, int pos_y, int graph_w, int graph_h)
+void live_preview_render(Image img, Texture2D tex,
+     NN nn, int img_w, int img_h, 
+     int pos_x, int pos_y, int graph_w, int graph_h)
 {
     for (size_t y = 0; y < (size_t) img_h; ++y){
         for (size_t x = 0; x < (size_t) img_w; ++x){
             MAT_AT(NN_IN(nn), 0, 0) = (float) x / (img_w - 1);
             MAT_AT(NN_IN(nn), 0, 1) = (float) y / (img_h - 1);
             nn_forward(nn);
-            uint8_t pixel = MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+            uint8_t pixel = (uint8_t) MAT_AT(NN_OUT(nn), 0, 0)*255.f;
+            uint8_t pixelr = (uint8_t) MAT_AT(NN_OUT(nn), 0, 1)*255.f;
+            uint8_t pixelg = (uint8_t) MAT_AT(NN_OUT(nn), 0, 2)*255.f;
+            uint8_t pixelb = (uint8_t) MAT_AT(NN_OUT(nn), 0, 3)*255.f;
             // Draw the pixel in the live preview image
-            Color color_pixel = CLITERAL(Color) { pixel, pixel, pixel, 255 };
+            Color color_pixel = CLITERAL(Color) { pixelr, pixelg, pixelb, pixel };
             ImageDrawPixel(&img, x, y, color_pixel);
         }
     }
@@ -581,7 +586,7 @@ void live_original_img_render(Image img, Texture2D tex, Mat to, int img_w, int i
     for (size_t y = 0; y < (size_t) img_h; ++y){
         for (size_t x = 0; x < (size_t) img_w; ++x){
             size_t idx = y * img_w + x;
-            uint8_t pixel = MAT_AT(to, idx, 0)*255.f;
+            uint8_t pixel = (uint8_t) MAT_AT(to, idx, 0)*255.f;
             // Draw the pixel in the live preview image
             Color color_pixel = CLITERAL(Color) { pixel, pixel, pixel, 255 };
             ImageDrawPixel(&img, x, y, color_pixel);
@@ -617,7 +622,7 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
     //  we use the original image size for now, (ie: 28x28, as we can easily re-compute the size from the ti/to matrix rows count),
     //  ie: original_img_size_w = sqrt(ti.rows) , this will work for any image data as long as it's not too large and has a ratio 1:1,
     //  NEXT TODO: otherwise we use a default preview image size_t, that is a original_img_size_w = sqrt(ti.rows) ;
-    uint32_t original_img_size = (uint32_t) sqrt(ti.rows/2) ; // sqrt(ti.rows) == sqrt(to.rows) 
+    int original_img_size = (int) sqrt(ti.rows/2) ; // sqrt(ti.rows) == sqrt(to.rows) 
     size_t preview_width = (size_t) original_img_size; //UI_WINDOW_WIDTH / num_of_widgets;
     size_t preview_height = (size_t) original_img_size; //  UI_WINDOW_HEIGHT / num_of_widgets; // preview_width, preview_height
     
@@ -646,10 +651,10 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
         for (size_t x=0; x <  original_img_size; ++x){
             size_t idx1 = y * original_img_size + x;
             size_t idx2 = original_img_size * original_img_size + y * original_img_size + x;
-            original_pixels[0][idx1] = ( uint32_t ) MAT_AT(to, idx1, 0)*255.f; // store original pixel data for later use
-            original_pixels[1][idx1] = ( uint32_t ) (MAT_AT(to, idx2, 0))*255.f; // store original pixel data for later use
-            uint8_t pixel2 = MAT_AT(to, idx1, 0)*255.f;
-            uint8_t pixel4 = MAT_AT(to, idx2, 0)*255.f;
+            uint8_t pixel2 = ( uint8_t ) MAT_AT(to, idx1, 0)*255.f;
+            uint8_t pixel4 = ( uint8_t ) MAT_AT(to, idx2, 0)*255.f;
+            original_pixels[0][idx1] = (uint32_t) pixel2; // ( uint8_t ) MAT_AT(to, idx1, 0)*255.f; // store original pixel data for later use
+            original_pixels[1][idx1] = (uint32_t) pixel4; // ( uint8_t ) (MAT_AT(to, idx2, 0))*255.f; // store original pixel data for later use
             ImageDrawPixel(&view_image_2, x, y, CLITERAL(Color) { pixel2, pixel2, pixel2, 255 });
             ImageDrawPixel(&view_image_4, x, y, CLITERAL(Color) { pixel4, pixel4, pixel4, 255 });
         }
@@ -668,8 +673,8 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
     size_t epoch = 0;
     size_t iteration = 0;
     size_t number_of_samples = ti.rows; // number of samples in the training data
-    size_t batch_count = number_of_samples / 8 ;// default batch count
-    size_t batch_size = number_of_samples / batch_count; // default batch size
+    size_t batch_size = number_of_samples / 28; // default batch size
+    size_t batch_count = number_of_samples / batch_size ;// default batch count
     if (number_of_samples % batch_size != 0) {
         batch_count = (number_of_samples + (batch_size - 1)) / batch_size ; // 1000 samples per batch
     } 
@@ -712,9 +717,10 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
              }
             // V: render video
             else if (IsKeyPressed(KEY_V)) {
-                
+                /*
     // Allocate and fill params
     Thread_params params = {0};
+    Thread_args args = {0};
     params.nn = nn;
     Thread_params * params_ptr = (Thread_params *) malloc(sizeof(params));
     *params_ptr = params;
@@ -729,7 +735,8 @@ NN display_training_gui(NN nn, NN g, Mat ti, Mat to,  float learn_rate, float di
     pthread_create(&tid, NULL, video_thread_func, params_ptr); // video_thread_func, params);
     pthread_join(tid, NULL);
 pthread_detach(tid); // Optional: auto-cleanup thread resources
-               // render_upscale_video(nn, upscale_video_file);
+               */
+                render_upscale_video(nn, upscale_video_file, RENDER_WIDTH, RENDER_HEIGHT, RENDER_FPS, RENDER_TIME);
             }
             // SPACE: start/pause training
             else if (IsKeyPressed(KEY_SPACE)) { stop_training = !stop_training; }
@@ -1033,8 +1040,8 @@ int main(int argc, char * argv[])
         out_rescaled_file_name = argv[3];
     }
     
-    int out_rescaled_img_size_w = 512;
-    int out_rescaled_img_size_h = 512;
+    uint32_t out_rescaled_img_size_w = 512;
+    uint32_t out_rescaled_img_size_h = 512;
     if (argc == 5 || argc == 6) {
         out_rescaled_img_size_w = atoi(argv[4]);
         if (argc == 6) {

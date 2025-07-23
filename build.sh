@@ -3,7 +3,7 @@
 set -xe
 
 
-gcc -O1 -Wall -Wextra  video.c -o video 
+#gcc -O1 -Wall -Wextra  video.c -o video 
 
 
 gcc -O1 -Wall -Wextra  png2mat.c -o img2mat -I./ext_libs/stb -lm
